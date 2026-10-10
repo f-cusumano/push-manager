@@ -6,7 +6,8 @@ Libreria Spring Boot per la messaggistica push in tempo reale verso i client web
 - **WebSocket/STOMP**: predisposto nelle astrazioni, da implementare.
 
 Con un'annotazione sulla classe di avvio e un controller vuoto, l'applicazione espone gli endpoint per
-sottoscriversi a un canale, ricevere gli eventi in streaming e filtrarli per tipo o per contenuto.
+sottoscriversi a un canale, ricevere gli eventi in streaming, filtrarli per tipo o per contenuto e
+ricevere solo i campi di interesse.
 L'applicazione pubblica gli eventi con una sola chiamata, la libreria li consegna ai client interessati.
 
 ## Indice
@@ -31,8 +32,8 @@ L'applicazione pubblica gli eventi con una sola chiamata, la libreria li consegn
 - A runtime l'applicazione deve fornire:
   - un container servlet e Jackson, ad esempio con `spring-boot-starter-web`;
   - un'implementazione di Jakarta Validation, ad esempio con `spring-boot-starter-validation`;
-  - un `PlatformTransactionManager`, perché gli eventi vengono consegnati dopo il commit della transazione
-    (vedi [Pubblicare eventi](#pubblicare-eventi)).
+  - un `PlatformTransactionManager` (presente con qualsiasi starter di accesso ai dati), perché gli eventi
+    vengono consegnati dopo il commit della transazione (vedi [Pubblicare eventi](#pubblicare-eventi)).
 - Opzionale: springdoc-openapi per vedere gli endpoint su Swagger UI. Le annotazioni OpenAPI sono già presenti.
 
 ## Installazione
@@ -136,6 +137,10 @@ Una proprietà assente vale `0` o `false`: senza configurazione l'heartbeat rest
 | `sseService` | `SseService` | Logica di sottoscrizione, filtro, streaming e disiscrizione. |
 | `sseEventManager` | `SseEventManager` | Punto d'ingresso per pubblicare eventi. |
 | `taskScheduler` | `ThreadPoolTaskScheduler` | Scheduler degli heartbeat (2 thread, prefisso `push-scheduler-`). |
+| `pushTransactionalEventListenerFactory` | `TransactionalEventListenerFactory` | Attiva i `@TransactionalEventListener` anche senza `@EnableTransactionManagement`. |
+
+`SseRegistry` e `SseService` usano il `JsonMapper` dell'applicazione (Jackson 3), se presente, per convertire i valori
+dei filtri e selezionare i campi dei payload con la stessa configurazione usata per serializzarli.
 
 `PushAutoConfig` abilita anche `@EnableAsync`. Il bean `taskScheduler` prende il posto di quello che Spring Boot
 crea di default con lo stesso nome; se l'applicazione ne definisce già uno, va tenuto conto del conflitto di nomi.
@@ -183,7 +188,10 @@ sseEventManager.publishEvent(SsePushEvent.of(user, EventType.UPDATED, Channels.U
   consegnato da un `@TransactionalEventListener(phase = AFTER_COMMIT)`: senza transazione attiva Spring lo scarta,
   se la transazione va in rollback non parte.
 - La consegna è asincrona (`@Async`): `publishEvent` torna subito e l'invio avviene su un altro thread.
+  Eventi pubblicati a breve distanza possono quindi arrivare in ordine diverso da quello di pubblicazione.
 - L'evento viene inviato a tutti i client in streaming sul canale che non lo escludono con i propri filtri.
+- Per i client che selezionano dei campi il payload viene convertito in JSON una volta sola per evento, anche se
+  i campi scelti sono diversi.
 
 ### Tipi di evento
 | Tipo | Filtrabile | Uso |
@@ -209,9 +217,14 @@ Il controller che estende `SseController<Channels>` eredita quattro endpoint, re
 | `GET` | `/sse/stream/{session-id}` | – | stream `text/event-stream` |
 | `DELETE` | `/sse/unsubscribe/{session-id}` | – | vuota |
 
+Errori:
+- `400` se la `FilteringRequest` non è valida o non è applicabile al payload del canale: campo inesistente,
+  check non definito per il tipo del campo, valore non convertibile nel tipo del campo (`InvalidFilterException`);
+- `404` se il `session-id` non corrisponde a nessun client (`NoSuchClientException`).
+
 ### Sottoscrizione
 Registra il client sul canale e restituisce il `sessionId` da usare negli altri endpoint. Lo stream non parte
-ancora: il client è in stato `SUBSCRIBED`.
+ancora: il client è in stato `SUBSCRIBED`. Se i filtri non sono validi il client non viene registrato.
 ```http
 POST /api/sse/subscribe/USERS
 Content-Type: application/json
@@ -220,7 +233,8 @@ Content-Type: application/json
   "requiredEventTypes": ["CREATED", "UPDATED"],
   "contentFilters": [
     { "fieldPath": "address.city", "check": "SAME_VALUE", "value": "Roma" }
-  ]
+  ],
+  "requiredFieldsPath": ["id", "name", "address"]
 }
 ```
 ```json
@@ -242,17 +256,19 @@ emitter senza riconfigurarlo. La risposta include gli header `X-Accel-Buffering:
 utili dietro nginx e altri proxy.
 
 ### Disiscrizione
-Invia l'evento `DISCONNECTED`, chiude lo stream e rimuove il client dal registro.
+Invia l'evento `DISCONNECTED`, chiude lo stream e rimuove il client dal registro. Funziona anche per i client che
+non hanno mai aperto lo stream.
 
 ## Formato degli eventi SSE
 Ogni evento applicativo arriva così:
 ```text
 id:3c1e0b7a-...        (messageId dell'evento)
 event:CREATED          (EventType)
-retry:0                (retryMs dell'evento, 0 se non indicato)
+retry:5000             (solo se l'evento ha retryMs)
 data:{"id":42,"name":"Mario","address":{"city":"Roma"}}
 ```
-Il dato è il payload serializzato in JSON dai message converter di Spring MVC. Gli eventi di sistema
+Il dato è il payload serializzato in JSON dai message converter di Spring MVC, oppure solo i campi selezionati
+dal client (vedi [Selezione dei campi](#selezione-dei-campi)). Gli eventi di sistema
 (`CONNECTED`, `HEARTBEAT`, `DISCONNECTED`) hanno come dato il testo descritto in [Tipi di evento](#tipi-di-evento).
 
 ## Filtri
@@ -262,6 +278,9 @@ Ogni client può limitare gli eventi che riceve con una `FilteringRequest`, alla
 |---|---|
 | `requiredEventTypes` | Tipi di evento da ricevere. Vuoto o assente = tutti. I tipi non filtrabili arrivano comunque. |
 | `contentFilters` | Condizioni sul payload, tutte in AND. Vuoto o assente = nessun filtro. |
+| `requiredFieldsPath` | Campi del payload da ricevere. Vuoto o assente = payload intero. |
+
+Una `PUT /sse/filter/{session-id}` sostituisce tutti e tre i campi: quelli non inviati tornano al valore di default.
 
 ### Filtri sul contenuto
 Ogni elemento di `contentFilters` è una `StreamingFilterRequest`:
@@ -295,6 +314,11 @@ Regole sui valori null: un campo null soddisfa solo `FIELD_ABSENT` e, se anche i
 `SAME_VALUE`; in tutti gli altri casi il check fallisce. Se un campo intermedio del percorso è null, il valore
 letto è null.
 
+Il `value` viene convertito una sola volta, quando arriva il filtro, nel tipo del campo: un numero JSON vale per campi
+`Integer`, `Long` o `Double`, una stringa ISO-8601 per i campi data (es. `"2030-01-01T00:00:00Z"`). Nei confronti tra
+due campi (`fieldPathValue`) i tipi devono essere compatibili. Le incoerenze vengono rifiutate subito con `400`, così
+durante lo streaming i filtri non falliscono.
+
 I filtri vengono tradotti in predicati una sola volta, quando arrivano; per ogni evento si esegue solo il predicato.
 
 Esempi:
@@ -304,7 +328,32 @@ Esempi:
 { "fieldPath": "deletedAt", "check": "FIELD_ABSENT" }
 { "fieldPath": "updatedAt", "check": "GREATER_THEN", "fieldPathValue": "createdAt" }
 { "fieldPath": "code", "check": "EXACT_LENGTH", "value": 6 }
+{ "fieldPath": "createdAt", "check": "GREATER_THEN", "value": "2026-01-01T00:00:00Z" }
 ```
+
+### Selezione dei campi
+Con `requiredFieldsPath` il client riceve solo i campi indicati invece del payload intero:
+
+- i percorsi usano i nomi dei campi Java e il punto per i campi annidati (`address.city`);
+- un campo selezionato porta con sé tutti i suoi sottocampi: `address` include `address.city` e `address.zip`;
+- un percorso che attraversa una collezione o un array si applica a ogni elemento (`orders.amount`);
+- i campi selezionati ma null arrivano come `null`;
+- **se tutti i campi selezionati sono vuoti l'evento non viene inviato** a quel client. Vuoto significa null,
+  collezione vuota o con soli elementi vuoti, oggetto con soli campi vuoti; `0`, `false` e `""` sono dati.
+
+Con il payload `{"id":7,"name":"Mario","address":{"city":"Roma","zip":"00100"},"orders":[{"code":"A1","amount":10.5}]}`:
+
+| `requiredFieldsPath` | Dato inviato |
+|---|---|
+| `["name", "address.city"]` | `{"name":"Mario","address":{"city":"Roma"}}` |
+| `["address"]` | `{"address":{"city":"Roma","zip":"00100"}}` |
+| `["orders.amount"]` | `{"orders":[{"amount":10.5}]}` |
+| `["surname"]` | rifiutato con `400`: campo inesistente |
+
+Se per lo stesso payload `name` e `address` fossero null, `["name", "address.city"]` farebbe scartare l'evento.
+
+I percorsi vengono verificati sui campi della classe del payload alla sottoscrizione; dentro una `Map` o un tipo generico
+non risolvibile i nomi non sono verificabili e vengono accettati.
 
 ## Esempio di client JavaScript
 ```js
@@ -313,7 +362,7 @@ const base = '/api/sse';
 const { sessionId } = await fetch(`${base}/subscribe/USERS`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ requiredEventTypes: ['CREATED', 'UPDATED'] })
+  body: JSON.stringify({ requiredEventTypes: ['CREATED', 'UPDATED'], requiredFieldsPath: ['id', 'name'] })
 }).then(r => r.json());
 
 const source = new EventSource(`${base}/stream/${sessionId}`);
@@ -355,7 +404,8 @@ In quel momento l'heartbeat viene cancellato.
 | `client` | `SseClient` e il suo stato `ClientStatus`. |
 | `controller` | `PushController` e `SseController`, da estendere. |
 | `event` | `PushEvent`/`SsePushEvent`, `EventType`, `EventManager`/`SseEventManager`. |
-| `filter` | Richieste di filtraggio, `CheckType`, validazione. |
+| `exception` | `InvalidFilterException` (400) e `NoSuchClientException` (404). |
+| `filter` | Richieste di filtraggio, `CheckType`, selezione dei campi (`FieldSelector`), validazione. |
 | `properties` | `PushProperties`. |
 | `registry` | `EventRegistry` e `SseRegistry`. |
 | `service` | `PushService` e `SseService`. |
@@ -372,24 +422,16 @@ servizio @Transactional
             └─ (commit) EventManager.onEvent  @Async
                  └─ SseEventManager.handle
                       └─ SseRegistry.broadcast ── per ogni client in STREAMING sul canale:
-                                                   filtro tipo evento → filtro contenuto → SseEmitter.send
+                                                   filtro tipo evento → filtro contenuto →
+                                                   selezione dei campi → SseEmitter.send
 ```
 
 ## Limitazioni note
-- **Sessione inesistente**: gli endpoint con `session-id` sconosciuto rispondono `500` (viene lanciata una
-  `RuntimeException` generica), non `404` come indicato nella documentazione OpenAPI.
-- **Tipo di `value` nei filtri**: il valore arriva dal JSON come `Integer`, `Long`, `Double`, `String` o `Boolean`
-  e viene confrontato con il tipo Java del campo senza conversioni. Quindi:
-  - un campo `Long` va confrontato con un numero fuori dal range di `Integer`, altrimenti il cast fallisce;
-  - un campo data (`OffsetDateTime`, `LocalDateTime`, `Instant`) non si può confrontare con una costante, ma solo con
-    un altro campo (`fieldPathValue`) o con `IS_IN_THE_PAST`/`IS_IN_THE_FUTURE`.
-- **Confronto tra campi**: i due campi devono avere lo stesso tipo Java (es. `Integer` con `Integer`).
-- **Errori nei filtri durante l'invio**: se un filtro fallisce su un evento (per i casi sopra), l'eccezione
-  interrompe la consegna di quell'evento ai client restanti.
-- **Tempo di riconnessione**: gli eventi applicativi senza `retryMs` inviano `retry:0`, che sostituisce nel browser
-  il valore `client-retry-ms` inviato con `CONNECTED`.
-- **Sottoscrizioni mai aperte**: la rimozione dal registro è agganciata alla chiusura dello stream, quindi un
-  client che si sottoscrive ma non chiama mai `GET stream` resta nel registro, anche dopo `DELETE unsubscribe`.
+- **Sottoscrizioni mai aperte**: un client che si sottoscrive ma non chiama mai `GET stream` né `DELETE unsubscribe`
+  resta nel registro.
+- **Proprietà JSON rinominate**: i percorsi si verificano sui nomi dei campi Java, mentre la selezione si applica
+  al JSON del payload. Un campo il cui nome JSON è diverso (`@JsonProperty`, naming strategy) non si può selezionare:
+  arriva sempre come `null`.
 - **Un solo canale per sessione**: per seguire più canali il client apre più sottoscrizioni.
 - **Istanza singola**: il registro dei client è in memoria. Con più istanze dell'applicazione ogni evento arriva
   solo ai client collegati all'istanza che lo pubblica.
@@ -399,4 +441,5 @@ servizio @Transactional
 ```bash
 ./mvnw clean verify
 ```
-Produce il jar della libreria, i sorgenti e la javadoc in `target/`.
+Esegue i test (unitari e un flusso SSE completo su server reale) e produce il jar della libreria, i sorgenti e la
+javadoc in `target/`.
