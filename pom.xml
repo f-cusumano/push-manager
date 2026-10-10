@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.fcusumano.push</groupId>
+    <artifactId>push-manager</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>${project.artifactId}</name>
+    <description>
+        Spring Boot library for real-time push messaging:
+        Server-Sent Events (SSE) and, in the future, WebSocket/STOMP
+    </description>
+    <url>https://github.com/f-cusumano/push-manager</url>
+
+    <developers>
+        <developer>
+            <name>Francesco Cusumano</name>
+            <url>https://github.com/f-cusumano</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <url>https://github.com/f-cusumano/push-manager</url>
+        <connection>scm:git:https://github.com/f-cusumano/push-manager.git</connection>
+        <developerConnection>scm:git:git@github.com:f-cusumano/push-manager.git</developerConnection>
+    </scm>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <spring.boot.version>4.0.5</spring.boot.version>
+        <!-- Versione usata da Springdoc 3.0.2 ('swagger-api.version') -->
+        <swagger.version>2.2.43</swagger.version>
+        <google.autoservice.version>1.1.1</google.autoservice.version>
+        <maven.compiler.plugin.version>3.15.0</maven.compiler.plugin.version>
+    </properties>
+
+    <!-- Libreria Spring: BOM importato al posto di spring-boot-starter-parent -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- @AutoConfiguration, @ConfigurationProperties -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- SseEmitter, controller REST (porta con sé spring-web, spring-context e spring-core con JavaPoet) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+        </dependency>
+
+        <!-- @TransactionalEventListener -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+            <version>${swagger.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Registrazione dell'annotation processor (il processor è in annotationProcessorPaths) -->
+        <dependency>
+            <groupId>com.google.auto.service</groupId>
+            <artifactId>auto-service-annotations</artifactId>
+            <version>${google.autoservice.version}</version>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven.compiler.plugin.version}</version>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>com.google.auto.service</groupId>
+                            <artifactId>auto-service</artifactId>
+                            <version>${google.autoservice.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

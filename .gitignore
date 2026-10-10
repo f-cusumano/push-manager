@@ -1,0 +1,26 @@
+# Build & Artifacts (Maven)
+target/
+pom.xml.tag
+release.properties
+/bin/
+.flattened-pom.xml
+
+# IDE Specific Files
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# OS/Logs
+.DS_Store
+*~
+*.log
