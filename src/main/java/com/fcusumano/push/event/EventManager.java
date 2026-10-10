@@ -143,10 +143,10 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
      *
      * @param event evento catturato
      */
-    //Per non ripetere l'annotaione su tutte le classi concrete
+    //Per non ripetere l'annotaione su tutte le classi concrete; non final, altrimenti il proxy di @Async non la intercetta
     @Async
     @TransactionalEventListener(phase = AFTER_COMMIT)
-    public final void onEvent(E event) {
+    public void onEvent(E event) {
         log.debug("Captured event {}..", event.description());
         handle(event);
         log.debug("..event successfully handled.");
