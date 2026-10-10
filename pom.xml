@@ -142,7 +142,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Su Windows i socket di loopback falliscono se il percorso temporaneo contiene spazi o nomi brevi (KEYBIZ~1) -->
+            <!-- Su Windows i socket di loopback falliscono se il percorso temporaneo contiene spazi o nomi brevi 8.3 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>

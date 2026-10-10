@@ -34,7 +34,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static com.fcusumano.push.TestPayloads.CREATED_AT;
-import static com.fcusumano.push.TestPayloads.mario;
+import static com.fcusumano.push.TestPayloads.user1;
 
 //Flusso completo su server reale: sottoscrizione, stream SSE, pubblicazione in transazione, filtri ed errori
 @SpringBootTest(classes = SseFlowTest.TestApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -58,14 +58,14 @@ class SseFlowTest {
         Assertions.assertEquals("event:CONNECTED", nextEvent(lines));
 
         //Campi selezionati tutti null: evento scartato
-        publish(new UserDto(1L, 0, null, null, CREATED_AT, null, new Address(null, "00100"), null, null), EventType.CREATED);
+        publish(new UserDto(1L, 0, null, null, CREATED_AT, null, new Address(null, "ZIP-1"), null, null), EventType.CREATED);
         //Tipo di evento non richiesto: evento scartato
-        publish(mario(), EventType.UPDATED);
-        publish(mario(), EventType.CREATED);
+        publish(user1(), EventType.UPDATED);
+        publish(user1(), EventType.CREATED);
 
         Assertions.assertEquals("event:CREATED", nextEvent(lines));
         final String data = nextLineStartingWith(lines, "data:");
-        Assertions.assertEquals(MAPPER.readTree("{\"name\":\"Mario\",\"address\":{\"city\":\"Roma\"}}"),
+        Assertions.assertEquals(MAPPER.readTree("{\"name\":\"FOO-1\",\"address\":{\"city\":\"CITY-1\"}}"),
                 MAPPER.readTree(data.substring("data:".length())));
         //Nessun altro evento: i due scartati non arrivano
         Assertions.assertNull(nextLineStartingWith(lines, "event:", 1500));

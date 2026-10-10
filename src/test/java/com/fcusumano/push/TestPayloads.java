@@ -40,10 +40,10 @@ public final class TestPayloads {
 
     public static final OffsetDateTime CREATED_AT = OffsetDateTime.parse("2026-01-01T10:00:00Z");
 
-    public static UserDto mario() {
-        return new UserDto(7L, 30, "Mario", true, CREATED_AT, CREATED_AT.plusDays(1),
-                new Address("Roma", "00100"), List.of("vip"),
-                List.of(new Order("A1", 10.5), new Order("A2", 20.0)));
+    public static UserDto user1() {
+        return new UserDto(7L, 30, "FOO-1", true, CREATED_AT, CREATED_AT.plusDays(1),
+                new Address("CITY-1", "ZIP-1"), List.of("TAG-1"),
+                List.of(new Order("ORDER-1", 10.5), new Order("ORDER-2", 20.0)));
     }
 
     public static UserDto anonymous() {

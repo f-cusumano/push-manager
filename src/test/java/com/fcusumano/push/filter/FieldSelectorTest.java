@@ -12,7 +12,7 @@ import java.util.List;
 
 import static com.fcusumano.push.TestPayloads.CREATED_AT;
 import static com.fcusumano.push.TestPayloads.anonymous;
-import static com.fcusumano.push.TestPayloads.mario;
+import static com.fcusumano.push.TestPayloads.user1;
 
 class FieldSelectorTest {
 
@@ -26,22 +26,22 @@ class FieldSelectorTest {
 
     @Test
     void onlySelectedFieldsAreKept() {
-        final JsonNode result = select(mario(), "name", "address.city");
-        Assertions.assertEquals(json("{\"name\":\"Mario\",\"address\":{\"city\":\"Roma\"}}"), result);
+        final JsonNode result = select(user1(), "name", "address.city");
+        Assertions.assertEquals(json("{\"name\":\"FOO-1\",\"address\":{\"city\":\"CITY-1\"}}"), result);
     }
 
     @Test
     void selectedFieldBringsAllSubfields() {
-        final JsonNode expected = json("{\"address\":{\"city\":\"Roma\",\"zip\":\"00100\"}}");
+        final JsonNode expected = json("{\"address\":{\"city\":\"CITY-1\",\"zip\":\"ZIP-1\"}}");
         //Il campo padre vince sul sottocampo, in qualsiasi ordine
-        Assertions.assertEquals(expected, select(mario(), "address"));
-        Assertions.assertEquals(expected, select(mario(), "address", "address.city"));
-        Assertions.assertEquals(expected, select(mario(), "address.city", "address"));
+        Assertions.assertEquals(expected, select(user1(), "address"));
+        Assertions.assertEquals(expected, select(user1(), "address", "address.city"));
+        Assertions.assertEquals(expected, select(user1(), "address.city", "address"));
     }
 
     @Test
     void pathThroughCollectionAppliesToEachElement() {
-        final JsonNode result = select(mario(), "orders.amount");
+        final JsonNode result = select(user1(), "orders.amount");
         Assertions.assertEquals(json("{\"orders\":[{\"amount\":10.5},{\"amount\":20.0}]}"), result);
     }
 
@@ -50,7 +50,7 @@ class FieldSelectorTest {
         //Campi null, oggetti null, liste vuote
         Assertions.assertNull(select(anonymous(), "name", "address.city", "tags", "orders.amount"));
         //Oggetto valorizzato ma con il solo sottocampo selezionato null
-        final UserDto noCity = new UserDto(1L, 0, null, null, CREATED_AT, null, new Address(null, "00100"), null, null);
+        final UserDto noCity = new UserDto(1L, 0, null, null, CREATED_AT, null, new Address(null, "ZIP-1"), null, null);
         Assertions.assertNull(select(noCity, "name", "address.city"));
         //Basta un campo valorizzato per inviare l'evento, con gli altri campi a null
         Assertions.assertEquals(json("{\"name\":null,\"createdAt\":\"2026-01-01T10:00:00Z\"}"),

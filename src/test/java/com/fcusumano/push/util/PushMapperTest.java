@@ -14,7 +14,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.util.stream.Collectors;
 
-import static com.fcusumano.push.TestPayloads.mario;
+import static com.fcusumano.push.TestPayloads.user1;
 import static com.fcusumano.push.filter.CheckType.EXACT_LENGTH;
 import static com.fcusumano.push.filter.CheckType.GREATER_THEN;
 import static com.fcusumano.push.filter.CheckType.LESS_THEN;
@@ -52,12 +52,12 @@ class PushMapperTest {
 
     @Test
     void reconnectTimeOnlyWhenSet() {
-        Assertions.assertFalse(render(SsePushEvent.of(mario(), EventType.CREATED, TestChannels.USERS)).contains("retry:"));
-        Assertions.assertTrue(render(SsePushEvent.of(mario(), EventType.CREATED, TestChannels.USERS, 5000L)).contains("retry:5000"));
+        Assertions.assertFalse(render(SsePushEvent.of(user1(), EventType.CREATED, TestChannels.USERS)).contains("retry:"));
+        Assertions.assertTrue(render(SsePushEvent.of(user1(), EventType.CREATED, TestChannels.USERS, 5000L)).contains("retry:5000"));
     }
 
     private static boolean test(StreamingFilterRequest filter) {
-        return PushMapper.mapToPredicate(filter, UserDto.class, MAPPER).test(mario());
+        return PushMapper.mapToPredicate(filter, UserDto.class, MAPPER).test(user1());
     }
 
     private static void rejected(StreamingFilterRequest filter) {
