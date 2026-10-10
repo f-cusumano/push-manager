@@ -69,6 +69,13 @@ public class SsePushEvent<T> extends PushEvent<T> {
 
     private final @NotNull ChannelEnum channel;
 
+    /**
+     * @param obj payload dell'evento, della classe esatta dichiarata dal canale
+     * @param eventType tipo dell'evento
+     * @param channel canale su cui pubblicare l'evento
+     * @param retryMs tempo di riconnessione suggerito al client (opzionale)
+     * @throws IllegalArgumentException se la classe del payload non è quella del canale
+     */
     public SsePushEvent(@NotNull T obj, @NotNull EventType eventType, @NotNull ChannelEnum channel, Long retryMs) {
         if (!Objects.equals(obj.getClass(), channel.payloadType())) {
             throw new IllegalArgumentException("Payload type '" + obj.getClass().getSimpleName() +
@@ -78,6 +85,7 @@ public class SsePushEvent<T> extends PushEvent<T> {
         this.channel = channel;
     }
 
+    /** Come {@link #SsePushEvent(Object, EventType, ChannelEnum, Long)}, senza retry. */
     public SsePushEvent(@NotNull T obj, @NotNull EventType eventType, @NotNull ChannelEnum channel) {
         this(obj, eventType, channel, null);
     }

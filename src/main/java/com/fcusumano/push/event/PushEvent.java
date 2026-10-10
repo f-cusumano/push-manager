@@ -146,6 +146,7 @@ public abstract class PushEvent<T> {
         this.retryMs = retryMs;
     }
 
+    /** @return descrizione leggibile dell'evento, pensata per i log */
     public String description() {
         return ClassUtils.getUserClass(this).getSimpleName() + " with message-id '" + messageId +
                "' created at " + messageCreationUTC + " (UTC), event-type '" + eventType +

@@ -106,14 +106,17 @@ public enum EventType {
         this(null, muteable);
     }
 
+    /** @return messaggio di default dell'evento, o stringa vuota se assente */
     public String getDefaultObj() {
         return StringUtils.hasText(defaultObj) ? defaultObj : "";
     }
 
+    /** @return {@code true} se l'evento può essere escluso dai filtri del client */
     public boolean isMuteable() {
         return muteable;
     }
 
+    /** @return evento SSE con id casuale, nome della costante e messaggio di default come dato */
     public SseEmitter.SseEventBuilder sseEventBuilder() {
         return SseEmitter.event().id(UUID.randomUUID().toString()).name(this.name()).data(this.getDefaultObj());
     }

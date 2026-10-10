@@ -73,6 +73,11 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 public @interface EnablePushMessaging {
 
+    /**
+     * Nome semplice dell'enum dei canali generato dall'annotation processor
+     * nello stesso package della classe annotata.
+     */
     String channelEnumName() default "Channels";
+    /** Canali di trasmissione: ognuno diventa una costante dell'enum generato. */
     ChannelDefinition[] channelCatalog() default {};
 }

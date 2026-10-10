@@ -344,6 +344,7 @@ public enum CheckType {
         this.type2definition = type2definition;
     }
 
+    /** @return numero e relazione di tipo dei termini richiesti dal check */
     public TargetDefinition getTargetDefinition() {
         return targetDefinition;
     }
@@ -381,6 +382,14 @@ public enum CheckType {
                 .findFirst().map(CheckDefinition::checkFunction).orElseThrow(RuntimeException::new);
     }
 
+    /**
+     * Esegue il check su un singolo valore ({@link TargetDefinition#SINGLE_OBJECT}).
+     * Un valore nullo soddisfa solo {@link #FIELD_ABSENT}.
+     *
+     * @param obj valore del campo
+     * @return esito del check
+     * @throws RuntimeException se il check non è definito per il tipo del valore
+     */
     public <T> boolean testPredicate(T obj) {
         //Per testare un predicato l'argomenti deve essere valorizzato,
         //unica eccezione per il caso FIELD_ABSENT;
@@ -390,6 +399,15 @@ public enum CheckType {
                 : selectPredicate(obj).test(obj);
     }
 
+    /**
+     * Esegue il check tra due valori. Se uno dei due è nullo il check fallisce,
+     * tranne {@link #SAME_VALUE} con entrambi i valori nulli.
+     *
+     * @param obj1 valore del campo
+     * @param obj2 secondo termine di confronto
+     * @return esito del check
+     * @throws RuntimeException se il check non è definito per i tipi dei valori
+     */
     public <T, U> boolean testPredicate(T obj1, U obj2) {
         //Per testare un predicato entrambi gli argomenti devono essere valorizzati,
         //unica eccezione per il caso SAME_VALUE ed entrambi gli argomenti nulli;

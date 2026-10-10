@@ -26,6 +26,10 @@ public record FilteringRequest(
         List<@NotNull @Valid StreamingFilterRequest> contentFilters
 ) {
 
+    /**
+     * @param request richiesta di filtraggio
+     * @return {@code true} se la richiesta è nulla o non contiene alcun filtro
+     */
     public static boolean nullEquivalent(FilteringRequest request) {
         if (request == null) return true;
         return CollectionUtils.isEmpty(request.requiredEventTypes) && CollectionUtils.isEmpty(request.contentFilters);

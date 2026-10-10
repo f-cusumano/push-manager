@@ -69,6 +69,8 @@ package com.fcusumano.push.channel;
  */
 public interface ChannelEnum {
 
+    /** @return nome del canale; nelle enum generate coincide con il nome della costante */
     String topic();
+    /** @return classe dei payload trasmessi sul canale */
     Class<?> payloadType();
 }

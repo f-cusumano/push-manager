@@ -76,9 +76,6 @@ public abstract class SseController<C extends ChannelEnum> extends PushControlle
      * @param channel canale a cui sottoscriversi
      * @param filters eventuali filtri iniziali applicati allo stream
      * @return informazioni sulla sessione SSE creata
-     *
-     * @operation summary="Sottoscrizione SSE"
-     * @operation description="Registra un nuovo client a un canale SSE e restituisce il session-id generato."
      */
     @Operation(
             summary = "Sottoscrizione SSE",
@@ -118,9 +115,6 @@ public abstract class SseController<C extends ChannelEnum> extends PushControlle
      *
      * @param sessionId identificativo della sessione da aggiornare
      * @param filters filtri aggiornati, opzionali
-     *
-     * @operation summary="Aggiornamento filtri SSE"
-     * @operation description="Aggiorna dinamicamente i filtri applicati agli eventi per una determinata sessione SSE."
      */
     @Operation(
             summary = "Aggiorna filtri SSE",
@@ -154,9 +148,6 @@ public abstract class SseController<C extends ChannelEnum> extends PushControlle
      *
      * @param sessionId identificativo della sessione SSE
      * @return un {@link SseEmitter} configurato per lo stream degli eventi
-     *
-     * @operation summary="Avvio streaming SSE"
-     * @operation description="Stabilisce la connessione SSE con il client e inizia l'invio degli eventi."
      */
     @Operation(
             summary = "Avvia lo streaming SSE",
@@ -192,9 +183,6 @@ public abstract class SseController<C extends ChannelEnum> extends PushControlle
      * Disiscrive il client SSE e chiude la sessione associata.
      *
      * @param sessionId identificativo della sessione SSE da chiudere
-     *
-     * @operation summary="Disconnessione SSE"
-     * @operation description="Termina la sessione SSE e rimuove il client dal registro."
      */
     @Operation(
             summary = "Disiscrizione SSE",

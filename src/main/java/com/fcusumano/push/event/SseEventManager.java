@@ -117,6 +117,10 @@ public class SseEventManager extends EventManager<SsePushEvent<?>, SseRegistry> 
 //        log.warn("Event '{}' not allowed for channel '{}'.", event.getMessageId(), event.getChannel().topic());
 //    }
 
+    /**
+     * Inoltra l'evento a tutti i client in streaming sul canale dell'evento
+     * che non lo escludono tramite i propri filtri.
+     */
     @Override
     public void handle(SsePushEvent<?> event) {
         log.debug("Publishing message on channel '{}'..", event.getChannel());

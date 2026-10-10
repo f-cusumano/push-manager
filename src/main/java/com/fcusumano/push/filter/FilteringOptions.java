@@ -22,6 +22,13 @@ public record FilteringOptions<T>(
         List<@NotNull EventType> allowedEventTypes,
         Predicate<T> condition
 ) {
+    /**
+     * Crea le opzioni componendo in AND tutti i predicati sul contenuto.
+     *
+     * @param allowedEventTypes tipi di evento ammessi (null/vuoto = tutti)
+     * @param conditions predicati sul contenuto (null/vuoto = nessun filtro)
+     * @return le opzioni di filtraggio
+     */
     public static <F> FilteringOptions<F> of(List<@NotNull EventType> allowedEventTypes,
                                              List<@NotNull Predicate<F>> conditions) {
         final Predicate<F> fullCondition = conditions == null || conditions.isEmpty() ? null

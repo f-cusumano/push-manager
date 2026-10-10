@@ -77,7 +77,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     private final Map<ChannelEnum, Set<SseClient<?>>> channel2clients = new ConcurrentHashMap<>();
 
     /**
-     * <h2>Sottoscrizione di un nuovo client</h2>
+     * <h4>Sottoscrizione di un nuovo client</h4>
      * <ul>
      *     <li>genera un <b>sessionId</b> univoco di tipo {@link UUID};</li>
      *     <li>crea un nuovo {@link SseClient} in stato {@link com.fcusumano.push.client.ClientStatus#SUBSCRIBED};</li>
@@ -101,7 +101,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     }
 
     /**
-     * <h2>Disiscrizione di un client da un canale tramite session-id</h2>
+     * <h4>Disiscrizione di un client da un canale tramite session-id</h4>
      * <p>
      * Rimuove il client associato al sessionId in unput.
      * Se un canale rimane privo di client, viene automaticamente eliminato dal registry.
@@ -118,7 +118,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     }
 
     /**
-     * <h2>Selezione di un client tramite session-id</h2>
+     * <h4>Selezione di un client tramite session-id</h4>
      * <p>
      * Il metodo effettua una lookup globale tra tutti i
      * canali alla ricerca del client con lo specifico sessionId in input.
@@ -139,7 +139,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     }
 
     /**
-     * <h2>Selezione di un emitter tramite session-id</h2>
+     * <h4>Selezione di un emitter tramite session-id</h4>
      * <p>
      * Il metodo effettua recupera il client attraverso {@link #selectClient(String)}.
      * In caso di successo ne restituisce l'emitter, altrimenti solleva un’eccezione.
@@ -153,14 +153,14 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     }
 
     /**
-     * <h2>Broadcast degli eventi</h2>
+     * <h4>Broadcast degli eventi</h4>
      * <p>
      * Il metodo è responsabile dell’invio di un
      * evento SSE a tutti i client del canale che sono nello stato
      * {@link com.fcusumano.push.client.ClientStatus#STREAMING}.
      * </p>
      *
-     * <h3>Flusso del broadcast</h3>
+     * <h5>Flusso del broadcast</h5>
      * <ol>
      *     <li>Recupera i client streaming del canale.</li>
      *     <li>Converte l’evento in {@link SseEmitter.SseEventBuilder} tramite <code>toEventBuilder()</code>.</li>
@@ -174,7 +174,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
      *     <li>Restituisce il numero di messaggi consegnati.</li>
      * </ol>
      *
-     * <h2>Filtraggio dei messaggi</h2>
+     * <h4>Filtraggio dei messaggi</h4>
      * <p>
      * Prima di inviare un evento a un client, il registry applica eventuali criteri
      * di filtraggio definiti nelle {@link com.fcusumano.push.filter.FilteringOptions}.

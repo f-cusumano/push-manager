@@ -121,13 +121,28 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
         this.registry = registry;
     }
 
-    /** ATTENZIONE: la pubblicazione dell'evento deve avvenire in un contesto transazionale. */
+    /**
+     * Pubblica un evento tramite l'{@link ApplicationEventPublisher} di Spring.
+     * <p>
+     * ATTENZIONE: la pubblicazione dell'evento deve avvenire in un contesto transazionale
+     * (es. metodo {@code @Transactional}): l'evento viene consegnato da {@link #onEvent(PushEvent)}
+     * solo dopo il commit e, senza una transazione attiva, viene ignorato.
+     * </p>
+     *
+     * @param event evento da pubblicare
+     */
     public void publishEvent(E event) {
         log.debug("Publishing event {}..", event.description());
         publisher.publishEvent(event);
         log.debug("..event successfully published.");
     }
 
+    /**
+     * Riceve gli eventi pubblicati, in modo asincrono e dopo il commit della transazione,
+     * e li passa a {@link #handle(PushEvent)}.
+     *
+     * @param event evento catturato
+     */
     //Per non ripetere l'annotaione su tutte le classi concrete
     @Async
     @TransactionalEventListener(phase = AFTER_COMMIT)
@@ -137,5 +152,10 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
         log.debug("..event successfully handled.");
     }
 
+    /**
+     * Gestisce l'evento ricevuto, ad esempio inoltrandolo ai client tramite il registry.
+     *
+     * @param event evento da gestire
+     */
     protected abstract void handle(E event);
 }

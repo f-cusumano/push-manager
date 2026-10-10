@@ -62,6 +62,8 @@ import java.lang.annotation.RetentionPolicy;
 @Retention(RetentionPolicy.SOURCE)
 public @interface ChannelDefinition {
 
+    /** Nome del canale e della costante enum generata, in UPPERCASE_SNAKE_CASE. */
     @NotBlank String topic();
+    /** Classe esatta dei payload ammessi sul canale (le sottoclassi non sono accettate). */
     @NotNull Class<?> payloadType();
 }

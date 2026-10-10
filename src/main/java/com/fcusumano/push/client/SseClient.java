@@ -120,6 +120,7 @@ public class SseClient<T> {
         return filteringOptions;
     }
 
+    /** @return classe dei payload del canale a cui il client è sottoscritto */
     public Class<T> payloadType() {
         return (Class<T>) channel.payloadType();
     }
