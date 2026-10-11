@@ -3,7 +3,9 @@ package com.fcusumano.push.service;
 import com.fcusumano.push.properties.PushProperties;
 import com.fcusumano.push.event.PushEvent;
 import com.fcusumano.push.registry.EventRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.TaskScheduler;
 
 
@@ -102,7 +104,12 @@ public abstract class PushService<E extends PushEvent<?>, R extends EventRegistr
         this.registry = registry;
     }
 
-    @Autowired
+    @Autowired //Scheduler unico o @Primary, come senza qualifier; se è ambiguo (es. con STOMP c'è anche il 'messageBrokerTaskScheduler' di Spring) quello della libreria
+    protected void setTaskScheduler(ObjectProvider<TaskScheduler> taskSchedulers,
+                                    @Qualifier("taskScheduler") ObjectProvider<TaskScheduler> libraryTaskScheduler) {
+        setTaskScheduler(taskSchedulers.getIfUnique(libraryTaskScheduler::getObject));
+    }
+
     protected void setTaskScheduler(TaskScheduler taskScheduler) {
         this.taskScheduler = taskScheduler;
     }
