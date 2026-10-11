@@ -10,6 +10,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.transaction.event.TransactionalEventListenerFactory;
 import tools.jackson.databind.json.JsonMapper;
@@ -28,6 +29,9 @@ import tools.jackson.databind.json.JsonMapper;
  *     <li>{@link SseEventManager}, da iniettare nell'applicazione per pubblicare eventi;</li>
  *     <li>un {@link TaskScheduler} chiamato {@code taskScheduler} (2 thread, prefisso {@code push-scheduler-})
  *         usato per gli heartbeat;</li>
+ *     <li>un executor chiamato {@code pushExecutor} (un thread per core, prefisso {@code push-executor-}) per la consegna
+ *         asincrona degli eventi; non è candidato all'autowiring, così Spring Boot e l'applicazione non lo usano al posto
+ *         dei propri executor;</li>
  *     <li>le {@link PushProperties} con prefisso {@code push-manager};</li>
  *     <li>una {@link TransactionalEventListenerFactory}, che rende attivi i {@code @TransactionalEventListener}
  *         anche se l'applicazione non abilita la gestione delle transazioni con {@code @EnableTransactionManagement}.</li>
@@ -37,7 +41,7 @@ import tools.jackson.databind.json.JsonMapper;
  * dei filtri e selezionare i campi dei payload con la stessa configurazione usata per serializzarli.
  * </p>
  * <p>
- * Abilita inoltre {@code @Async}, necessario alla consegna asincrona degli eventi
+ * Abilita inoltre {@code @Async}, necessario alla consegna asincrona degli eventi su {@code pushExecutor}
  * (vedi {@link com.fcusumano.push.event.EventManager#onEvent}).
  * </p>
  *
@@ -47,6 +51,9 @@ import tools.jackson.databind.json.JsonMapper;
 @AutoConfiguration
 @EnableConfigurationProperties(PushProperties.class)
 public class PushAutoConfig {
+
+    /** Nome dell'executor usato da {@code @Async} per la consegna degli eventi. */
+    public static final String PUSH_EXECUTOR = "pushExecutor";
 
     @Bean("sseRegistry")
     public SseRegistry sseRegistry(ObjectProvider<JsonMapper> jsonMapper) {
@@ -67,6 +74,16 @@ public class PushAutoConfig {
     @Bean("pushTransactionalEventListenerFactory")
     public static TransactionalEventListenerFactory pushTransactionalEventListenerFactory() {
         return new TransactionalEventListenerFactory();
+    }
+
+    //Non candidato all'autowiring: Spring Boot non lo conta tra gli executor e non lo assegna ai propri canali
+    @Bean(name = PUSH_EXECUTOR, autowireCandidate = false)
+    public ThreadPoolTaskExecutor pushExecutor() {
+        final ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(Runtime.getRuntime().availableProcessors());
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.setThreadNamePrefix("push-executor-");
+        return executor;
     }
 
     @Bean("taskScheduler")

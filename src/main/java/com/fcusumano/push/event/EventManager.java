@@ -1,5 +1,6 @@
 package com.fcusumano.push.event;
 
+import com.fcusumano.push.PushAutoConfig;
 import com.fcusumano.push.registry.EventRegistry;
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
@@ -147,7 +148,7 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
      * @param event evento catturato
      */
     //Per non ripetere l'annotaione su tutte le classi concrete; non final, altrimenti il proxy di @Async non la intercetta
-    @Async
+    @Async(PushAutoConfig.PUSH_EXECUTOR) //Executor della libreria: non dipende da quelli dell'applicazione
     @TransactionalEventListener(phase = AFTER_COMMIT)
     public void onEvent(E event) {
         if (!eventClass.isInstance(event)) return; //Spring consegna ogni PushEvent a ogni manager: si scartano quelli di un altro protocollo

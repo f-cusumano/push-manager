@@ -116,7 +116,8 @@ final class StompPushConfigurer implements WebSocketMessageBrokerConfigurer, Sma
         if (!beanFactory.containsBean("applicationTaskExecutor") && !beanFactory.containsBean("taskExecutor")
             && beanFactory.getBeanNamesForType(AsyncConfigurer.class, false, false).length == 0) {
             log.warn("Spring Boot did not create 'applicationTaskExecutor' because the WebSocket message broker registers its own executors: "
-                     + "@Async push delivery (SSE and STOMP) falls back to a new thread per event. Set 'spring.task.execution.mode=force' to restore it "
+                     + "the application's own @Async methods fall back to a new thread per call (push delivery uses 'pushExecutor'). "
+                     + "Set 'spring.task.execution.mode=force' to restore it "
                      + "(Spring Boot then runs the WebSocket client channels on it too).");
         }
         if (beanFactory.getBeanProvider(Validator.class).getIfUnique() == null) {
