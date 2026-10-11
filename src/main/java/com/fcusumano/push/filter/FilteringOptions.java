@@ -1,7 +1,9 @@
 package com.fcusumano.push.filter;
 
 import com.fcusumano.push.event.EventType;
+import com.fcusumano.push.event.PushEvent;
 import jakarta.validation.constraints.NotNull;
+import org.springframework.util.CollectionUtils;
 
 import java.util.List;
 import java.util.function.Predicate;
@@ -38,5 +40,19 @@ public record FilteringOptions<T>(
         final Predicate<F> fullCondition = conditions == null || conditions.isEmpty() ? null
                 : conditions.stream().reduce(Predicate::and).orElse(null);
         return new FilteringOptions<>(allowedEventTypes, fullCondition, fieldSelector);
+    }
+
+    /**
+     * Verifica se l'evento supera i filtri sul tipo (gli eventi non muteable sono sempre ammessi)
+     * e sul contenuto.
+     *
+     * @param event l'evento da verificare
+     * @return {@code true} se l'evento va inviato al client
+     */
+    public boolean accepts(@NotNull PushEvent<T> event) { //Stessa regola di SseRegistry.clientInterested
+        final boolean eventPermitted = CollectionUtils.isEmpty(allowedEventTypes)
+                                       || allowedEventTypes.contains(event.getEventType())
+                                       || !event.getEventType().isMuteable();
+        return eventPermitted && (condition == null || condition.test(event.getData()));
     }
 }

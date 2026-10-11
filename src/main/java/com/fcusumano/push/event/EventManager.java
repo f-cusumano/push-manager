@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
+import org.springframework.core.ResolvableType;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.transaction.event.TransactionalEventListener;
 
@@ -110,6 +111,7 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
     private static final Logger log = LoggerFactory.getLogger(EventManager.class);
 
     protected final R registry;
+    private final Class<?> eventClass; //Classe degli eventi del protocollo, risolta dai generics della sottoclasse
     private ApplicationEventPublisher publisher;
 
     @Override //Automaticamente iniettato
@@ -119,6 +121,7 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
 
     protected EventManager(R registry) {
         this.registry = registry;
+        this.eventClass = ResolvableType.forClass(EventManager.class, getClass()).getGeneric(0).resolve(PushEvent.class);
     }
 
     /**
@@ -139,7 +142,7 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
 
     /**
      * Riceve gli eventi pubblicati, in modo asincrono e dopo il commit della transazione,
-     * e li passa a {@link #handle(PushEvent)}.
+     * e li passa a {@link #handle(PushEvent)}; gli eventi di un altro protocollo vengono ignorati.
      *
      * @param event evento catturato
      */
@@ -147,6 +150,7 @@ public abstract class EventManager<E extends PushEvent<?>, R extends EventRegist
     @Async
     @TransactionalEventListener(phase = AFTER_COMMIT)
     public void onEvent(E event) {
+        if (!eventClass.isInstance(event)) return; //Spring consegna ogni PushEvent a ogni manager: si scartano quelli di un altro protocollo
         log.debug("Captured event {}..", event.description());
         handle(event);
         log.debug("..event successfully handled.");

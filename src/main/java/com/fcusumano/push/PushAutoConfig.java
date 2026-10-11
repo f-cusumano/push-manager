@@ -78,7 +78,8 @@ public class PushAutoConfig {
         return scheduler;
     }
 
-    private static JsonMapper jsonMapperOrDefault(ObjectProvider<JsonMapper> jsonMapper) {
+    //Package-private: riusato da StompPushAutoConfig
+    static JsonMapper jsonMapperOrDefault(ObjectProvider<JsonMapper> jsonMapper) {
         return jsonMapper.getIfAvailable(() -> JsonMapper.builder().build());
     }
 }

@@ -54,6 +54,10 @@ import java.lang.annotation.Target;
  *         sovrascrivere il catalogo dei canali.
  *         <br>Default: array vuoto.
  *     </li>
+ *
+ *     <li><b>stomp</b> – Abilita anche la consegna via STOMP su WebSocket.
+ *         <br>Default: <code>false</code>.
+ *     </li>
  * </ul>
  *
  * <h2>Note</h2>
@@ -69,7 +73,7 @@ import java.lang.annotation.Target;
  * @see ChannelDefinition
  */
 @Target(ElementType.TYPE)
-@Import(PushAutoConfig.class)
+@Import({PushAutoConfig.class, StompImportSelector.class})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface EnablePushMessaging {
 
@@ -80,4 +84,6 @@ public @interface EnablePushMessaging {
     String channelEnumName() default "Channels";
     /** Canali di trasmissione: ognuno diventa una costante dell'enum generato. */
     ChannelDefinition[] channelCatalog() default {};
+    /** Abilita anche la consegna via STOMP su WebSocket: richiede spring-boot-starter-websocket e un controller che estende StompController. */
+    boolean stomp() default false;
 }
