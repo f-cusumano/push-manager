@@ -344,6 +344,14 @@ public enum CheckType {
         this.type2definition = type2definition;
     }
 
+    /**
+     * @param type1 tipo del campo da controllare (wrapper per i primitivi)
+     * @return {@code true} se il check è definito per il tipo, o per un tipo che può contenerlo
+     */
+    public boolean supports(@NotNull Class<?> type1) {
+        return type2definition.stream().anyMatch(d -> d.type1.isAssignableFrom(type1) || type1.isAssignableFrom(d.type1));
+    }
+
     /** @return numero e relazione di tipo dei termini richiesti dal check */
     public TargetDefinition getTargetDefinition() {
         return targetDefinition;

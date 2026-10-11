@@ -3,6 +3,9 @@ package com.fcusumano.push.registry;
 import com.fcusumano.push.channel.ChannelEnum;
 import com.fcusumano.push.client.SseClient;
 import com.fcusumano.push.event.SsePushEvent;
+import com.fcusumano.push.exception.NoSuchClientException;
+import com.fcusumano.push.filter.FieldSelector;
+import com.fcusumano.push.filter.FilteringOptions;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
@@ -10,6 +13,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Map;
 import java.util.Set;
@@ -19,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Collectors;
 
 import static com.fcusumano.push.client.ClientStatus.STREAMING;
-import static com.fcusumano.push.util.ObjectMapper.toEventBuilder;
+import static com.fcusumano.push.util.PushMapper.toEventBuilder;
 
 
 /**
@@ -64,7 +69,6 @@ import static com.fcusumano.push.util.ObjectMapper.toEventBuilder;
  * <ul>
  *     <li>La classe è final perché rappresenta il registry concreto SSE.</li>
  *     <li>Si appoggia a {@link SsePushEvent} per garantire la coerenza tra canale e payload.</li>
- *     <li>Sarebbe opportuno introdurre una custom exception per <code>selectClient()</code>.</li>
  * </ul>
  *
  * @author Francesco Cusumano
@@ -75,6 +79,12 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
     private static final Logger log = LoggerFactory.getLogger(SseRegistry.class);
 
     private final Map<ChannelEnum, Set<SseClient<?>>> channel2clients = new ConcurrentHashMap<>();
+    private final JsonMapper jsonMapper;
+
+    /** @param jsonMapper mapper dell'applicazione, usato per la selezione dei campi dei payload */
+    public SseRegistry(JsonMapper jsonMapper) {
+        this.jsonMapper = jsonMapper;
+    }
 
     /**
      * <h4>Sottoscrizione di un nuovo client</h4>
@@ -127,6 +137,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
      *
      * @param sessionId l'identificativo univoco della sessione e del client
      * @return il client
+     * @throws NoSuchClientException se nessun client ha il session-id indicato
      */
     public SseClient<Object> selectClient(@NotBlank String sessionId) {
         for (ChannelEnum channel: channel2clients.keySet()) {
@@ -135,7 +146,7 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
             }
         }
         log.warn("No client with session-id '{}' has been found", sessionId);
-        throw new RuntimeException(); //Da raffinare --> NoSuchClientException
+        throw new NoSuchClientException("No client with session-id '%s' has been found", sessionId);
     }
 
     /**
@@ -163,12 +174,14 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
      * <h5>Flusso del broadcast</h5>
      * <ol>
      *     <li>Recupera i client streaming del canale.</li>
-     *     <li>Converte l’evento in {@link SseEmitter.SseEventBuilder} tramite <code>toEventBuilder()</code>.</li>
      *     <li>Per ogni client:
      *         <ul>
-     *             <li>verifica se è interessato tramite {@link #clientInterested(SseClient, SsePushEvent)};</li>
+     *             <li>verifica se è interessato all'evento (vedi sotto);</li>
+     *             <li>se il client ha selezionato dei campi, li estrae dall'albero JSON del payload, calcolato
+     *                 una volta sola per evento, e salta il client se sono tutti vuoti;</li>
      *             <li>invoca {@code emitter.send(builder)};</li>
-     *             <li>in caso di errore chiude l’emitter e registra il problema.</li>
+     *             <li>se il filtraggio fallisce salta il client, se l'invio fallisce chiude l’emitter;
+     *                 in entrambi i casi registra il problema e prosegue con gli altri client.</li>
      *         </ul>
      *     </li>
      *     <li>Restituisce il numero di messaggi consegnati.</li>
@@ -198,21 +211,43 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
 
         @SuppressWarnings("unchecked") final Set<SseClient<T>> clients = rawClients.stream()
                 .map(c -> (SseClient<T>) c).collect(Collectors.toSet());
-        final SseEmitter.SseEventBuilder builder = toEventBuilder(event);
+        SseEmitter.SseEventBuilder fullPayloadBuilder = null; //Condiviso dai client senza selezione dei campi
+        JsonNode payloadTree = null; //Calcolato una volta sola, se almeno un client seleziona dei campi
         int delivered = 0;
         for (SseClient<T> client : clients) {
             final SseEmitter emitter = client.emitter();
-            if (clientInterested(client, event)) {
-                try {
-                    log.debug("Emitter '{}' sending on channel '{}'..", emitter, channel);
-                    emitter.send(builder);
-                    delivered++;
-                } catch (Exception e) {
-                    log.warn("Emitter '{}' send failed on channel '{}'. Closing emitter.", emitter, channel, e);
-                    emitter.completeWithError(e);
+            final FilteringOptions<T> filteringOptions = client.filteringOptions(); //Letto una volta: può cambiare
+            final SseEmitter.SseEventBuilder builder;
+            try {
+                if (!clientInterested(filteringOptions, event)) {
+                    log.debug("Emitter '{}' not interested to stream this message on channel '{}'..", emitter, channel);
+                    continue;
                 }
-            } else {
-                log.debug("Emitter '{}' not interested to stream this message on channel '{}'..", emitter, channel);
+                final FieldSelector fieldSelector = filteringOptions == null ? null : filteringOptions.fieldSelector();
+                if (fieldSelector == null) {
+                    if (fullPayloadBuilder == null) fullPayloadBuilder = toEventBuilder(event, event.getData());
+                    builder = fullPayloadBuilder;
+                } else {
+                    if (payloadTree == null) payloadTree = jsonMapper.valueToTree(event.getData());
+                    final JsonNode selectedFields = fieldSelector.select(payloadTree);
+                    if (selectedFields == null) {
+                        log.debug("Emitter '{}' skipped on channel '{}': all selected fields are empty", emitter, channel);
+                        continue;
+                    }
+                    builder = toEventBuilder(event, selectedFields);
+                }
+            } catch (Exception e) {
+                log.warn("Filtering failed for client with session-id '{}' on channel '{}'. Message skipped.",
+                        client.sessionId(), channel, e);
+                continue;
+            }
+            try {
+                log.debug("Emitter '{}' sending on channel '{}'..", emitter, channel);
+                emitter.send(builder);
+                delivered++;
+            } catch (Exception e) {
+                log.warn("Emitter '{}' send failed on channel '{}'. Closing emitter.", emitter, channel, e);
+                emitter.completeWithError(e);
             }
         }
         return delivered;
@@ -226,15 +261,13 @@ public final class SseRegistry implements EventRegistry<SsePushEvent<?>> {
                 .collect(Collectors.toSet());
     }
 
-    @SuppressWarnings("unchecked")
     /* Un client è interessato all'evento se:
         -   non ha filtri
         -   oppure il tipo di evento è tra quelli permessi
         -   oppure il tipo di evento è 'non muteable'
         -   e la condizione dei filtri è soddisfatta
      */
-    private <T> boolean clientInterested(@NotNull SseClient<T> client, @NotNull SsePushEvent<T> event) {
-        final var filteringOptions = client.filteringOptions();
+    private <T> boolean clientInterested(FilteringOptions<T> filteringOptions, @NotNull SsePushEvent<T> event) {
         if (filteringOptions == null) return true;
         final var requiredEventTypes = filteringOptions.allowedEventTypes();
         final boolean eventPermitted = CollectionUtils.isEmpty(requiredEventTypes)

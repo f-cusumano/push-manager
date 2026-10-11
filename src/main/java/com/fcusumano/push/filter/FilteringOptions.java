@@ -15,24 +15,28 @@ import java.util.function.Predicate;
  *                          gli eventi non muteable non possono essere esclusi
  * @param condition filtro sul contenuto dell'evento (composto da tutti i filtri richiesti):
  *                  se null = nessun filtro applicato, solo gli eventi conformi altrimenti
+ * @param fieldSelector campi del payload da trasmettere: se null = payload intero
  *
  * @author Francesco Cusumano
  */
 public record FilteringOptions<T>(
         List<@NotNull EventType> allowedEventTypes,
-        Predicate<T> condition
+        Predicate<T> condition,
+        FieldSelector fieldSelector
 ) {
     /**
      * Crea le opzioni componendo in AND tutti i predicati sul contenuto.
      *
      * @param allowedEventTypes tipi di evento ammessi (null/vuoto = tutti)
      * @param conditions predicati sul contenuto (null/vuoto = nessun filtro)
+     * @param fieldSelector campi del payload da trasmettere (null = payload intero)
      * @return le opzioni di filtraggio
      */
     public static <F> FilteringOptions<F> of(List<@NotNull EventType> allowedEventTypes,
-                                             List<@NotNull Predicate<F>> conditions) {
+                                             List<@NotNull Predicate<F>> conditions,
+                                             FieldSelector fieldSelector) {
         final Predicate<F> fullCondition = conditions == null || conditions.isEmpty() ? null
                 : conditions.stream().reduce(Predicate::and).orElse(null);
-        return new FilteringOptions<>(allowedEventTypes, fullCondition);
+        return new FilteringOptions<>(allowedEventTypes, fullCondition, fieldSelector);
     }
 }

@@ -82,9 +82,9 @@ public class SseClient<T> {
 
     private final @NotBlank String sessionId;
     private final @NotNull ChannelEnum channel;
-    private @NotNull ClientStatus status;
+    private volatile @NotNull ClientStatus status; //Campi letti e scritti da thread diversi (richieste, broadcast, heartbeat)
     private final @NotNull SseEmitter emitter;
-    private FilteringOptions<T> filteringOptions;
+    private volatile FilteringOptions<T> filteringOptions;
 
 
     public SseClient(@NotBlank String sessionId,
