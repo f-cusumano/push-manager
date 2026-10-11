@@ -139,12 +139,14 @@ Una proprietà assente vale `0` o `false`: senza configurazione l'heartbeat rest
 | `sseService` | `SseService` | Logica di sottoscrizione, filtro, streaming e disiscrizione. |
 | `sseEventManager` | `SseEventManager` | Punto d'ingresso per pubblicare eventi. |
 | `taskScheduler` | `ThreadPoolTaskScheduler` | Scheduler degli heartbeat (2 thread, prefisso `push-scheduler-`). |
+| `pushExecutor` | `ThreadPoolTaskExecutor` | Consegna asincrona degli eventi (un thread per core, prefisso `push-executor-`). Non è candidato all'autowiring: Spring Boot crea comunque il proprio `applicationTaskExecutor`. |
 | `pushTransactionalEventListenerFactory` | `TransactionalEventListenerFactory` | Attiva i `@TransactionalEventListener` anche senza `@EnableTransactionManagement`. |
 
 `SseRegistry` e `SseService` usano il `JsonMapper` dell'applicazione (Jackson 3), se presente, per convertire i valori
 dei filtri e selezionare i campi dei payload con la stessa configurazione usata per serializzarli.
 
-`PushAutoConfig` abilita anche `@EnableAsync`. Il bean `taskScheduler` prende il posto di quello che Spring Boot
+`PushAutoConfig` abilita anche `@EnableAsync`; la libreria usa `@Async("pushExecutor")`, quindi i suoi eventi non
+occupano l'executor dell'applicazione. Il bean `taskScheduler` prende il posto di quello che Spring Boot
 crea di default con lo stesso nome; se l'applicazione ne definisce già uno, va tenuto conto del conflitto di nomi.
 
 La libreria non si registra in `AutoConfiguration.imports`: si attiva solo con `@EnablePushMessaging`.
@@ -190,7 +192,7 @@ sseEventManager.publishEvent(SsePushEvent.of(user, EventType.UPDATED, Channels.U
 - **La pubblicazione deve avvenire dentro una transazione** (metodo `@Transactional`). L'evento viene
   consegnato da un `@TransactionalEventListener(phase = AFTER_COMMIT)`: senza transazione attiva Spring lo scarta,
   se la transazione va in rollback non parte.
-- La consegna è asincrona (`@Async`): `publishEvent` torna subito e l'invio avviene su un altro thread.
+- La consegna è asincrona (`@Async` su `pushExecutor`): `publishEvent` torna subito e l'invio avviene su un altro thread.
   Eventi pubblicati a breve distanza possono quindi arrivare in ordine diverso da quello di pubblicazione.
 - L'evento viene inviato a tutti i client in streaming sul canale che non lo escludono con i propri filtri.
 - Per i client che selezionano dei campi il payload viene convertito in JSON una volta sola per evento, anche se
@@ -527,10 +529,11 @@ Le sottoscrizioni push non generano `SessionSubscribeEvent`/`SessionUnsubscribeE
 I listener della libreria per `SessionConnectEvent` e `SessionDisconnectEvent` vengono eseguiti per primi.
 
 ### Executor
-- Con STOMP attivo Spring Boot non crea `applicationTaskExecutor`, perché il broker registra i propri executor: la consegna
-  `@Async` degli eventi (SSE e STOMP) usa un thread nuovo per evento e all'avvio compare un warning.
+- La consegna degli eventi (SSE e STOMP) usa sempre `pushExecutor`, anche con STOMP attivo.
+- Con STOMP attivo Spring Boot non crea `applicationTaskExecutor`, perché il broker registra i propri executor: i metodi
+  `@Async` dell'applicazione usano un thread nuovo per chiamata e all'avvio compare un warning.
   Con `spring.task.execution.mode=force` Spring Boot crea comunque l'executor, ma lo usa anche per i canali dei client
-  WebSocket (`clientInboundChannel`, `clientOutboundChannel`), che lo condividono quindi con la consegna degli eventi.
+  WebSocket (`clientInboundChannel`, `clientOutboundChannel`).
 - Se Spring Boot sceglierebbe per i canali dei client lo scheduler `taskScheduler` della libreria (2 thread, heartbeat SSE),
   la libreria dà ai canali un pool dedicato con i default di Spring (2 thread per core). Un executor scelto dall'applicazione
   con `registration.executor(...)` in un proprio `WebSocketMessageBrokerConfigurer` resta il suo; come con l'executor
@@ -569,7 +572,7 @@ Il flusso di un evento:
 servizio @Transactional
   └─ SseEventManager.publishEvent(event)
        └─ ApplicationEventPublisher
-            └─ (commit) EventManager.onEvent  @Async
+            └─ (commit) EventManager.onEvent  @Async("pushExecutor")
                  └─ SseEventManager.handle
                       └─ SseRegistry.broadcast ── per ogni client in STREAMING sul canale:
                                                    filtro tipo evento → filtro contenuto →
