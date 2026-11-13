@@ -1,599 +1,121 @@
 # push-manager
 
-Libreria Spring Boot per la messaggistica push in tempo reale verso i client web.
+A Spring Boot library that adds real-time push to a web application with one annotation: clients subscribe to typed channels over **Server-Sent Events** or **STOMP over WebSocket**, filter what they receive, and the application publishes events with a single call, delivered only after the database transaction commits.
 
-- **SSE** (Server-Sent Events): disponibile.
-- **STOMP su WebSocket**: disponibile, si attiva con `@EnablePushMessaging(stomp = true)` (vedi [STOMP su WebSocket](#stomp-su-websocket)).
+## Features
 
-Con un'annotazione sulla classe di avvio e un controller vuoto, l'applicazione espone gli endpoint per
-sottoscriversi a un canale, ricevere gli eventi in streaming, filtrarli per tipo o per contenuto e
-ricevere solo i campi di interesse.
-L'applicazione pubblica gli eventi con una sola chiamata, la libreria li consegna ai client interessati.
+- **Two protocols, one model**: SSE (REST subscription + `text/event-stream`) and native STOMP `SUBSCRIBE` over WebSocket; STOMP is opt-in (`@EnablePushMessaging(stomp = true)`) and its dependencies are optional, so SSE-only apps don't pull them in.
+- **Typed channels generated at compile time**: channels are declared on the annotation; an annotation processor generates a `Channels` enum and validates channel names at build time. Publishing a payload of the wrong type is rejected.
+- **Zero-code endpoints**: extend `SseController<Channels>` or `StompController<Channels>` with an empty body to get subscribe, stream, update-filters and unsubscribe.
+- **Server-side filtering per client**: by event type (`CREATED`, `UPDATED`, `DELETED`, `MESSAGE`) and by payload content, with 18 checks (equality, ranges, dates in past/future, string prefix/suffix/contains, length, null checks) on nested fields, comparing against a constant or another field. Filters are validated and compiled into predicates once, at subscription time (invalid filters → HTTP 400 or a STOMP error message).
+- **Field selection (projections)**: each client can ask for a subset of fields (`address.city`, `orders.amount` across collections); events whose selected fields are all empty are not sent.
+- **Filters can change while streaming** (SSE `PUT`, STOMP `SEND` with receipt).
+- **Transaction-aware, asynchronous delivery**: events go out on `@TransactionalEventListener(AFTER_COMMIT)`, so a rollback sends nothing; delivery runs on a dedicated `pushExecutor` thread pool, separate from the application's executors.
+- **Connection lifecycle**: SSE heartbeat to keep connections alive behind proxies, `CONNECTED`/`DISCONNECTED` events, suggested reconnect delay, automatic cleanup of dead clients; for STOMP, all subscriptions of a session are removed on disconnect.
+- **Plays well with an existing STOMP setup**: the library intercepts only its own destination prefix (`/push`), never forwards push frames to the broker, leaves broker configuration to the app, and its interceptor runs after Spring Security's.
+- **OpenAPI-ready**: endpoints carry Swagger annotations, and the generated channel enum shows up as allowed values.
 
-## Indice
-- [Requisiti](#requisiti)
-- [Installazione](#installazione)
-- [Avvio rapido](#avvio-rapido)
-- [Configurazione](#configurazione)
-- [Canali](#canali)
-- [Pubblicare eventi](#pubblicare-eventi)
-- [Endpoint REST](#endpoint-rest)
-- [Formato degli eventi SSE](#formato-degli-eventi-sse)
-- [Filtri](#filtri)
-- [Esempio di client JavaScript](#esempio-di-client-javascript)
-- [Ciclo di vita di un client](#ciclo-di-vita-di-un-client)
-- [STOMP su WebSocket](#stomp-su-websocket)
-- [Architettura](#architettura)
-- [Limitazioni note](#limitazioni-note)
-- [Build](#build)
+## Architecture
 
-## Requisiti
-- JDK 25
-- Spring Boot 4.x con Spring MVC (stack servlet; WebFlux non è supportato)
-- A runtime l'applicazione deve fornire:
-  - un container servlet e Jackson, ad esempio con `spring-boot-starter-web`;
-  - un'implementazione di Jakarta Validation, ad esempio con `spring-boot-starter-validation`;
-  - un `PlatformTransactionManager` (presente con qualsiasi starter di accesso ai dati), perché gli eventi
-    vengono consegnati dopo il commit della transazione (vedi [Pubblicare eventi](#pubblicare-eventi)).
-- Opzionale: springdoc-openapi per vedere gli endpoint su Swagger UI. Le annotazioni OpenAPI sono già presenti.
-- Solo per STOMP: `spring-boot-starter-websocket` (vedi [STOMP su WebSocket](#stomp-su-websocket)).
+The code is organised by role, each with a generic abstract base and one implementation per protocol: **controller** (HTTP/STOMP entry points), **service** (subscription, filter validation, unsubscribe), **registry** (thread-safe in-memory map of clients per channel, performs the broadcast), **event manager** (publishing API) and **event** (typed payload + event type + channel). Only the STOMP classes depend on `spring-messaging`/`spring-websocket`, an invariant checked by a test. An application service publishes an event inside its transaction; Spring hands it to the event manager after commit, on the push executor; the event manager routes it to the protocol's registry, which, for every streaming client on that channel, applies the event-type filter, the content filter and the field selection, then writes to the `SseEmitter` or sends a STOMP `MESSAGE`.
 
-## Installazione
-Aggiungere la dipendenza:
-```xml
-<dependency>
-    <groupId>com.fcusumano.push</groupId>
-    <artifactId>push-manager</artifactId>
-    <version>${push-manager.version}</version>
-</dependency>
+```mermaid
+flowchart LR
+    S["App service<br/>@Transactional"] -->|publishEvent| EM[Sse/StompEventManager]
+    EM -->|ApplicationEventPublisher| TX{{after commit<br/>@Async pushExecutor}}
+    TX --> R[Sse/StompRegistry]
+    R -->|per client:<br/>type filter, content filter,<br/>field selection| C1[SSE clients<br/>SseEmitter]
+    R --> C2[STOMP clients<br/>MESSAGE frame]
+    U[Client] -->|subscribe / filter / unsubscribe| CT[Sse/StompController] --> SV[Sse/StompService] --> R
 ```
 
-Attivare l'annotation processor, che genera l'enum dei canali in fase di compilazione:
-```xml
-<plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-compiler-plugin</artifactId>
-    <configuration>
-        <annotationProcessorPaths>
-            <path>
-                <groupId>com.fcusumano.push</groupId>
-                <artifactId>push-manager</artifactId>
-                <version>${push-manager.version}</version>
-            </path>
-        </annotationProcessorPaths>
-    </configuration>
-</plugin>
-```
-Se il progetto usa già altri processor (es. Lombok, MapStruct), aggiungere questo `<path>` accanto agli altri.
+## Stack
 
-## Avvio rapido
-1. Annotare la classe di avvio con `@EnablePushMessaging` e dichiarare almeno un canale:
-   ```java
-   @EnablePushMessaging(channelCatalog = {
-           @ChannelDefinition(topic = "USERS", payloadType = UserDto.class),
-           @ChannelDefinition(topic = "CONNECTED_USERS", payloadType = Integer.class)
-   })
-   @SpringBootApplication
-   public class MyApplication {
-
-       public static void main(String[] args) {
-           SpringApplication.run(MyApplication.class, args);
-       }
-   }
-   ```
-2. Compilare: in `target/generated-sources/annotations` compare l'enum `Channels`, nello stesso package della
-   classe annotata.
-3. Estendere il controller astratto con l'enum generato. Il corpo resta vuoto:
-   ```java
-   @RestController
-   @RequestMapping("/api")
-   public class PushEndpoint extends SseController<Channels> {}
-   ```
-4. Configurare le proprietà (vedi [Configurazione](#configurazione)).
-5. Pubblicare gli eventi dai servizi applicativi:
-   ```java
-   @Service
-   public class UserService {
-
-       private final SseEventManager sseEventManager;
-
-       public UserService(SseEventManager sseEventManager) {
-           this.sseEventManager = sseEventManager;
-       }
-
-       @Transactional
-       public UserDto create(UserDto user) {
-           //...salvataggio
-           sseEventManager.publishEvent(SsePushEvent.of(user, EventType.CREATED, Channels.USERS));
-           return user;
-       }
-   }
-   ```
-
-## Configurazione
-Le proprietà hanno prefisso `push-manager`:
-
-| Proprietà | Tipo | Valore consigliato | Descrizione |
-|---|---|---|---|
-| `push-manager.timeout-ms` | long | `0` | Timeout dell'`SseEmitter` in millisecondi. `0` = nessun timeout. |
-| `push-manager.heartbeat-enabled` | boolean | `true` | Invia periodicamente l'evento `HEARTBEAT` ai client in streaming, per tenere viva la connessione dietro proxy e load balancer. |
-| `push-manager.heartbeat-interval-ms` | long | `1500` | Intervallo tra due heartbeat. Se non è positivo l'heartbeat non parte. |
-| `push-manager.client-retry-ms` | long | `2000` | Tempo di riconnessione suggerito al browser, inviato con l'evento `CONNECTED`. |
-
-```yaml
-push-manager:
-  timeout-ms: 0
-  heartbeat-enabled: true
-  heartbeat-interval-ms: 1500
-  client-retry-ms: 2000
-```
-
-Una proprietà assente vale `0` o `false`: senza configurazione l'heartbeat resta spento.
-
-### Bean registrati
-`@EnablePushMessaging` importa `PushAutoConfig`, che registra:
-
-| Bean | Tipo | Ruolo |
-|---|---|---|
-| `sseRegistry` | `SseRegistry` | Registro thread-safe dei client per canale. |
-| `sseService` | `SseService` | Logica di sottoscrizione, filtro, streaming e disiscrizione. |
-| `sseEventManager` | `SseEventManager` | Punto d'ingresso per pubblicare eventi. |
-| `taskScheduler` | `ThreadPoolTaskScheduler` | Scheduler degli heartbeat (2 thread, prefisso `push-scheduler-`). |
-| `pushExecutor` | `ThreadPoolTaskExecutor` | Consegna asincrona degli eventi (un thread per core, prefisso `push-executor-`). Non è candidato all'autowiring: Spring Boot crea comunque il proprio `applicationTaskExecutor`. |
-| `pushTransactionalEventListenerFactory` | `TransactionalEventListenerFactory` | Attiva i `@TransactionalEventListener` anche senza `@EnableTransactionManagement`. |
-
-`SseRegistry` e `SseService` usano il `JsonMapper` dell'applicazione (Jackson 3), se presente, per convertire i valori
-dei filtri e selezionare i campi dei payload con la stessa configurazione usata per serializzarli.
-
-`PushAutoConfig` abilita anche `@EnableAsync`; la libreria usa `@Async("pushExecutor")`, quindi i suoi eventi non
-occupano l'executor dell'applicazione. Il bean `taskScheduler` prende il posto di quello che Spring Boot
-crea di default con lo stesso nome; se l'applicazione ne definisce già uno, va tenuto conto del conflitto di nomi.
-
-La libreria non si registra in `AutoConfiguration.imports`: si attiva solo con `@EnablePushMessaging`.
-
-## Canali
-Un canale è un flusso di eventi con un payload di tipo fisso. Si dichiara con `@ChannelDefinition`:
-
-| Attributo | Descrizione |
+| | Version |
 |---|---|
-| `topic` | Nome del canale e della costante enum generata. Deve rispettare `^[A-Z][A-Z0-9_]*$`, altrimenti la compilazione fallisce. |
-| `payloadType` | Classe esatta dei payload ammessi. Le sottoclassi vengono rifiutate. |
+| Java | 25 (`maven.compiler.release`) |
+| Spring Boot (BOM) | 4.0.5 |
+| Spring Framework (webmvc, tx, websocket, messaging) | 7.0.6 |
+| Jackson | 3.1.0 (Jackson 3, `tools.jackson`) |
+| Jakarta Validation API | 3.1.1 |
+| Swagger annotations | 2.2.43 |
+| Google AutoService | 1.1.1 (annotation processor registration) |
+| Tests | JUnit Jupiter 6.0.3, Spring Boot Test, embedded Tomcat 11.0.20 |
+| Build | Maven 3.9.14 (wrapper) |
 
-`@EnablePushMessaging` accetta:
+## Getting started
 
-| Attributo | Default | Descrizione |
-|---|---|---|
-| `channelCatalog` | `{}` | Elenco dei canali. |
-| `channelEnumName` | `"Channels"` | Nome dell'enum generato. |
-| `stomp` | `false` | Abilita anche la consegna via STOMP su WebSocket. |
+**Prerequisites**: JDK 25 (Maven is provided by the wrapper). The host application needs Spring MVC (`spring-boot-starter-web`), a Jakarta Validation implementation and a `PlatformTransactionManager`; for STOMP, `spring-boot-starter-websocket`.
 
-L'enum generato implementa `ChannelEnum` ed è annotato con `@Schema(enumAsRef = true)`, così Swagger mostra
-i canali ammessi nel path dell'endpoint di sottoscrizione:
+**Build** the library and install it in the local Maven repository:
+
+```bash
+./mvnw clean install
+```
+
+**Use it** in a Spring Boot application: add the `com.fcusumano.push:push-manager:0.1.0-SNAPSHOT` dependency and list the same artifact in the compiler's `annotationProcessorPaths` (it generates the channel enum). Then:
+
 ```java
-@Schema(enumAsRef = true)
-public enum Channels implements ChannelEnum {
-    USERS(UserDto.class),
-    CONNECTED_USERS(Integer.class);
-    //topic() restituisce name(), payloadType() la classe dichiarata
-}
-```
+@EnablePushMessaging(channelCatalog = {
+        @ChannelDefinition(topic = "USERS", payloadType = UserDto.class)
+})
+@SpringBootApplication
+public class MyApplication { /* main */ }
 
-## Pubblicare eventi
-Gli eventi si creano con `SsePushEvent` e si pubblicano con `SseEventManager`:
-```java
-sseEventManager.publishEvent(SsePushEvent.of(user, EventType.UPDATED, Channels.USERS));
+@RestController
+@RequestMapping("/api")
+public class PushEndpoint extends SseController<Channels> {} // Channels is generated
 
-//Con tempo di riconnessione suggerito al client
-sseEventManager.publishEvent(SsePushEvent.of(user, EventType.UPDATED, Channels.USERS, 5000L));
-```
+@Service
+public class UserService {
+    private final SseEventManager events;
+    public UserService(SseEventManager events) { this.events = events; }
 
-- Il costruttore verifica che la classe del payload sia esattamente quella del canale, altrimenti lancia
-  `IllegalArgumentException`.
-- **La pubblicazione deve avvenire dentro una transazione** (metodo `@Transactional`). L'evento viene
-  consegnato da un `@TransactionalEventListener(phase = AFTER_COMMIT)`: senza transazione attiva Spring lo scarta,
-  se la transazione va in rollback non parte.
-- La consegna è asincrona (`@Async` su `pushExecutor`): `publishEvent` torna subito e l'invio avviene su un altro thread.
-  Eventi pubblicati a breve distanza possono quindi arrivare in ordine diverso da quello di pubblicazione.
-- L'evento viene inviato a tutti i client in streaming sul canale che non lo escludono con i propri filtri.
-- Per i client che selezionano dei campi il payload viene convertito in JSON una volta sola per evento, anche se
-  i campi scelti sono diversi.
-
-### Tipi di evento
-| Tipo | Filtrabile | Uso |
-|---|---|---|
-| `CONNECTED` | no | Inviato dalla libreria all'apertura dello stream, con dato `"Connection opened"`. |
-| `DISCONNECTED` | no | Inviato dalla libreria alla disiscrizione, con dato `"Connection closed"`. |
-| `HEARTBEAT` | no | Inviato dalla libreria periodicamente, con dato `"Connection keep-alive"`. |
-| `MESSAGE` | sì | Messaggio applicativo generico. |
-| `CREATED` | sì | Entità creata. |
-| `UPDATED` | sì | Entità modificata. |
-| `DELETED` | sì | Entità eliminata. |
-| `ERROR` | no | Errore lato server. |
-
-I tipi non filtrabili arrivano sempre, anche se il client ha chiesto solo altri tipi.
-
-## Endpoint REST
-Il controller che estende `SseController<Channels>` eredita quattro endpoint, relativi al suo `@RequestMapping`:
-
-| Metodo | Path | Body | Risposta |
-|---|---|---|---|
-| `POST` | `/sse/subscribe/{channel}` | `FilteringRequest` opzionale | `SseSubscriptionResponse` (JSON) |
-| `PUT` | `/sse/filter/{session-id}` | `FilteringRequest` opzionale | vuota |
-| `GET` | `/sse/stream/{session-id}` | – | stream `text/event-stream` |
-| `DELETE` | `/sse/unsubscribe/{session-id}` | – | vuota |
-
-Errori:
-- `400` se la `FilteringRequest` non è valida o non è applicabile al payload del canale: campo inesistente,
-  check non definito per il tipo del campo, valore non convertibile nel tipo del campo (`InvalidFilterException`);
-- `404` se il `session-id` non corrisponde a nessun client (`NoSuchClientException`).
-
-### Sottoscrizione
-Registra il client sul canale e restituisce il `sessionId` da usare negli altri endpoint. Lo stream non parte
-ancora: il client è in stato `SUBSCRIBED`. Se i filtri non sono validi il client non viene registrato.
-```http
-POST /api/sse/subscribe/USERS
-Content-Type: application/json
-
-{
-  "requiredEventTypes": ["CREATED", "UPDATED"],
-  "contentFilters": [
-    { "fieldPath": "address.city", "check": "SAME_VALUE", "value": "Roma" }
-  ],
-  "requiredFieldsPath": ["id", "name", "address"]
-}
-```
-```json
-{
-  "sessionId": "0b9f5c6e-6a3e-4c9e-9a51-3f3f0f6c1d2a",
-  "channel": "USERS",
-  "streamedObject": "UserDto"
-}
-```
-`streamedObject` è il nome semplice della classe dei payload del canale.
-
-### Modifica dei filtri
-Sostituisce i filtri della sessione. Un body assente o senza filtri li rimuove. Si può chiamare anche durante lo
-streaming: i nuovi filtri valgono dal primo evento successivo.
-
-### Streaming
-Apre lo stream SSE e invia subito l'evento `CONNECTED`. Se la sessione è già in streaming restituisce lo stesso
-emitter senza riconfigurarlo. La risposta include gli header `X-Accel-Buffering: no` e `Cache-Control: no-cache`,
-utili dietro nginx e altri proxy.
-
-### Disiscrizione
-Invia l'evento `DISCONNECTED`, chiude lo stream e rimuove il client dal registro. Funziona anche per i client che
-non hanno mai aperto lo stream.
-
-## Formato degli eventi SSE
-Ogni evento applicativo arriva così:
-```text
-id:3c1e0b7a-...        (messageId dell'evento)
-event:CREATED          (EventType)
-retry:5000             (solo se l'evento ha retryMs)
-data:{"id":42,"name":"Mario","address":{"city":"Roma"}}
-```
-Il dato è il payload serializzato in JSON dai message converter di Spring MVC, oppure solo i campi selezionati
-dal client (vedi [Selezione dei campi](#selezione-dei-campi)). Gli eventi di sistema
-(`CONNECTED`, `HEARTBEAT`, `DISCONNECTED`) hanno come dato il testo descritto in [Tipi di evento](#tipi-di-evento).
-
-## Filtri
-Ogni client può limitare gli eventi che riceve con una `FilteringRequest`, alla sottoscrizione o in seguito:
-
-| Campo | Descrizione |
-|---|---|
-| `requiredEventTypes` | Tipi di evento da ricevere. Vuoto o assente = tutti. I tipi non filtrabili arrivano comunque. |
-| `contentFilters` | Condizioni sul payload, tutte in AND. Vuoto o assente = nessun filtro. |
-| `requiredFieldsPath` | Campi del payload da ricevere. Vuoto o assente = payload intero. |
-
-Una `PUT /sse/filter/{session-id}` sostituisce tutti e tre i campi: quelli non inviati tornano al valore di default.
-
-### Filtri sul contenuto
-Ogni elemento di `contentFilters` è una `StreamingFilterRequest`:
-
-| Campo | Obbligatorio | Descrizione |
-|---|---|---|
-| `fieldPath` | sì | Campo del payload da controllare. Per i campi annidati si usa il punto: `address.city`. Si legge il campo, anche privato o ereditato, non il getter. |
-| `check` | sì | Tipo di controllo (vedi tabella sotto). |
-| `value` | dipende | Valore costante con cui confrontare il campo. |
-| `fieldPathValue` | dipende | Altro campo del payload con cui confrontare il primo. |
-
-Per i check su un solo termine `value` e `fieldPathValue` devono essere assenti; per gli altri deve essercene
-esattamente uno. Una richiesta che non rispetta queste regole viene rifiutata con `400`.
-
-| Check | Termini | Tipi supportati |
-|---|---|---|
-| `FIELD_PRESENT` | 1 | qualsiasi: il campo non è null |
-| `FIELD_ABSENT` | 1 | qualsiasi: il campo è null |
-| `IS_IN_THE_PAST` | 1 | `OffsetDateTime`, `LocalDateTime`, `Instant` |
-| `IS_IN_THE_FUTURE` | 1 | `OffsetDateTime`, `LocalDateTime`, `Instant` |
-| `SAME_VALUE` | 2, stesso tipo | qualsiasi, confronto con `equals` |
-| `LESS_THEN` | 2, stesso tipo | `Integer`, `Long`, `Double`, `OffsetDateTime`, `LocalDateTime`, `Instant` |
-| `LESS_THEN_OR_EQUAL_TO` | 2, stesso tipo | come sopra |
-| `GREATER_THEN` | 2, stesso tipo | come sopra |
-| `GREATER_THEN_OR_EQUAL_TO` | 2, stesso tipo | come sopra |
-| `STARTS_WITH`, `ENDS_WITH`, `CONTAINS` | 2, stesso tipo | `String` |
-| `STARTS_WITH_IGNORE_CASE`, `ENDS_WITH_IGNORE_CASE`, `CONTAINS_IGNORE_CASE` | 2, stesso tipo | `String` |
-| `EXACT_LENGTH`, `LENGTH_LESS_THAN`, `LENGTH_MORE_THAN` | 2, tipi diversi | campo `String`, valore `Integer` |
-
-Regole sui valori null: un campo null soddisfa solo `FIELD_ABSENT` e, se anche il secondo termine è null,
-`SAME_VALUE`; in tutti gli altri casi il check fallisce. Se un campo intermedio del percorso è null, il valore
-letto è null.
-
-Il `value` viene convertito una sola volta, quando arriva il filtro, nel tipo del campo: un numero JSON vale per campi
-`Integer`, `Long` o `Double`, una stringa ISO-8601 per i campi data (es. `"2030-01-01T00:00:00Z"`). Nei confronti tra
-due campi (`fieldPathValue`) i tipi devono essere compatibili. Le incoerenze vengono rifiutate subito con `400`, così
-durante lo streaming i filtri non falliscono.
-
-I filtri vengono tradotti in predicati una sola volta, quando arrivano; per ogni evento si esegue solo il predicato.
-
-Esempi:
-```json
-{ "fieldPath": "name", "check": "STARTS_WITH_IGNORE_CASE", "value": "mar" }
-{ "fieldPath": "age", "check": "GREATER_THEN_OR_EQUAL_TO", "value": 18 }
-{ "fieldPath": "deletedAt", "check": "FIELD_ABSENT" }
-{ "fieldPath": "updatedAt", "check": "GREATER_THEN", "fieldPathValue": "createdAt" }
-{ "fieldPath": "code", "check": "EXACT_LENGTH", "value": 6 }
-{ "fieldPath": "createdAt", "check": "GREATER_THEN", "value": "2026-01-01T00:00:00Z" }
-```
-
-### Selezione dei campi
-Con `requiredFieldsPath` il client riceve solo i campi indicati invece del payload intero:
-
-- i percorsi usano i nomi dei campi Java e il punto per i campi annidati (`address.city`);
-- un campo selezionato porta con sé tutti i suoi sottocampi: `address` include `address.city` e `address.zip`;
-- un percorso che attraversa una collezione o un array si applica a ogni elemento (`orders.amount`);
-- i campi selezionati ma null arrivano come `null`;
-- **se tutti i campi selezionati sono vuoti l'evento non viene inviato** a quel client. Vuoto significa null,
-  collezione vuota o con soli elementi vuoti, oggetto con soli campi vuoti; `0`, `false` e `""` sono dati.
-
-Con il payload `{"id":7,"name":"Mario","address":{"city":"Roma","zip":"00100"},"orders":[{"code":"A1","amount":10.5}]}`:
-
-| `requiredFieldsPath` | Dato inviato |
-|---|---|
-| `["name", "address.city"]` | `{"name":"Mario","address":{"city":"Roma"}}` |
-| `["address"]` | `{"address":{"city":"Roma","zip":"00100"}}` |
-| `["orders.amount"]` | `{"orders":[{"amount":10.5}]}` |
-| `["surname"]` | rifiutato con `400`: campo inesistente |
-
-Se per lo stesso payload `name` e `address` fossero null, `["name", "address.city"]` farebbe scartare l'evento.
-
-I percorsi vengono verificati sui campi della classe del payload alla sottoscrizione; dentro una `Map` o un tipo generico
-non risolvibile i nomi non sono verificabili e vengono accettati.
-
-## Esempio di client JavaScript
-```js
-const base = '/api/sse';
-
-const { sessionId } = await fetch(`${base}/subscribe/USERS`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ requiredEventTypes: ['CREATED', 'UPDATED'], requiredFieldsPath: ['id', 'name'] })
-}).then(r => r.json());
-
-const source = new EventSource(`${base}/stream/${sessionId}`);
-source.addEventListener('CONNECTED', e => console.log(e.data));
-source.addEventListener('CREATED', e => console.log('Nuovo utente', JSON.parse(e.data)));
-source.addEventListener('UPDATED', e => console.log('Utente modificato', JSON.parse(e.data)));
-
-//Modifica dei filtri a stream aperto
-await fetch(`${base}/filter/${sessionId}`, {
-  method: 'PUT',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ contentFilters: [{ fieldPath: 'address.city', check: 'SAME_VALUE', value: 'Roma' }] })
-});
-
-//Chiusura
-window.addEventListener('beforeunload', () => {
-  source.close();
-  fetch(`${base}/unsubscribe/${sessionId}`, { method: 'DELETE', keepalive: true });
-});
-```
-Gli eventi vanno ascoltati per nome con `addEventListener`: `onmessage` riceve solo gli eventi senza nome.
-
-## Ciclo di vita di un client
-```text
-POST subscribe ──> SUBSCRIBED ──GET stream──> STREAMING ──> DISABLED (rimosso dal registro)
-                                                  │
-                         heartbeat periodico ─────┤
-                         PUT filter (anche qui) ──┘
-```
-Il client passa a `DISABLED` e viene rimosso quando lo stream si chiude per qualsiasi motivo: disiscrizione,
-timeout, errore di rete o chiusura del browser (rilevata al primo invio fallito, tipicamente l'heartbeat).
-In quel momento l'heartbeat viene cancellato.
-
-## STOMP su WebSocket
-I client si sottoscrivono con un `SUBSCRIBE` STOMP nativo e ricevono gli eventi come frame `MESSAGE`, con gli stessi
-filtri e la stessa selezione dei campi di SSE. Nessuna chiamata REST.
-
-### Attivazione
-1. Aggiungere `spring-boot-starter-websocket`: `spring-websocket` e `spring-messaging` sono dipendenze opzionali della
-   libreria, un'applicazione solo SSE non le porta con sé.
-2. Abilitare STOMP sull'annotazione:
-   ```java
-   @EnablePushMessaging(stomp = true, channelCatalog = {
-           @ChannelDefinition(topic = "USERS", payloadType = UserDto.class)
-   })
-   @SpringBootApplication
-   public class MyApplication {}
-   ```
-3. Estendere il controller STOMP con l'enum generato. Il corpo resta vuoto; può comunque dipendere da altri bean
-   (es. `SimpMessagingTemplate`) e avere metodi `@MessageMapping`:
-   ```java
-   @Controller
-   public class PushStompEndpoint extends StompController<Channels> {}
-   ```
-   Serve esattamente un controller: con nessuno o più di uno l'avvio fallisce.
-4. Pubblicare con `StompEventManager`, con le stesse regole di SSE (dentro una transazione, consegna `@Async`):
-   ```java
-   stompEventManager.publishEvent(StompPushEvent.of(user, EventType.CREATED, Channels.USERS));
-   ```
-
-SSE e STOMP possono convivere: ogni protocollo ha il suo controller e il suo tipo di evento, quindi per raggiungere
-i client di entrambi si pubblicano due eventi. Se STOMP viene disattivato va rimosso anche il controller STOMP.
-
-### Proprietà STOMP
-| Proprietà | Tipo | Default | Descrizione |
-|---|---|---|---|
-| `push-manager.stomp.endpoint` | String | `/push-ws` | Endpoint WebSocket registrato dalla libreria. Vuoto (`push-manager.stomp.endpoint=`) = nessuno: i client usano gli endpoint dell'applicazione. |
-| `push-manager.stomp.allowed-origin-patterns` | List | assente = solo stessa origine | Origini ammesse sull'endpoint della libreria. |
-| `push-manager.stomp.destination-prefix` | String | `/push` | Prefisso riservato alla libreria: deve iniziare e non finire con `/`. Un prefisso dell'applicazione o del broker al suo interno blocca l'avvio. |
-| `push-manager.client-retry-ms` | long | `0` | Se positivo, inviato come header `retry-ms` del `CONNECTED`. |
-
-Le altre proprietà di `push-manager` valgono solo per SSE: con STOMP il keep-alive è l'heart-beat del broker.
-
-### Frame
-| Frame del client | Destinazione e header | Effetto |
-|---|---|---|
-| `SUBSCRIBE` | `destination:/push/{CHANNEL}`, `id` obbligatorio, `filters` opzionale (una `FilteringRequest` in JSON), `receipt` opzionale, `ack` assente o `auto` | Sottoscrive e avvia lo streaming. Il `RECEIPT` arriva solo se la sottoscrizione è accettata. |
-| `SEND` | `destination:/push/filter/{subscription-id}`, `receipt` opzionale; body `FilteringRequest` | Sostituisce tutti i filtri, come `PUT /sse/filter`. Body vuoto o `{}` li rimuove. `RECEIPT` solo se applicati. |
-| `UNSUBSCRIBE` | `id`, `receipt` opzionale | Rimuove il client. |
-| `SEND` ad altre destinazioni sotto `/push` | – | Scartato: solo il server pubblica sui canali push. |
-
-I frame della libreria vengono trattenuti prima del broker: né il broker semplice né un relay li ricevono.
-Una connessione può avere più sottoscrizioni push, anche allo stesso canale con proiezioni diverse.
-
-Ogni `MESSAGE` della libreria ha `content-type:application/json`, `event-type` (il nome dell'`EventType`), `event-id`
-(il `messageId` dell'evento, casuale per `CONNECTED` ed `ERROR`) e, se previsto, `retry-ms`. Il primo messaggio di una
-sottoscrizione accettata è `CONNECTED`, con body `{"subscriptionId":"sub-0","channel":"USERS","streamedObject":"UserDto"}`;
-seguono gli eventi, interi o con i soli campi selezionati.
-
-Gli errori arrivano come `MESSAGE` con `event-type:ERROR` e body `{"subscriptionId":"...","destination":"...","message":"..."}`,
-mai come frame STOMP `ERROR`, che chiuderebbe la connessione:
-- filtri non validi alla sottoscrizione, canale inesistente, `ack` diverso da `auto` o `id` già in uso: la sottoscrizione
-  non viene registrata (il client manda poi la sua `UNSUBSCRIBE`, trattenuta anch'essa dalla libreria);
-- filtri non validi in una modifica: restano in vigore i precedenti;
-- modifica dei filtri di una sottoscrizione sconosciuta: l'errore arriva con `destination:/push/filter/{id}`.
-
-Per i filtri non applicabili al payload i testi sono quelli delle risposte `400` di SSE, per le violazioni Jakarta
-`percorso: messaggio`. Il client si disiscrive con `UNSUBSCRIBE` o chiudendo la connessione:
-alla chiusura (`DISCONNECT`, chiusura della pagina, rete, timeout dell'heart-beat) tutti i client della sessione vengono rimossi.
-
-```js
-import { Client } from '@stomp/stompjs';
-
-const client = new Client({ brokerURL: 'wss://example.test/push-ws', reconnectDelay: 5000 });
-client.onConnect = () => { //A ogni (ri)connessione: alla disconnessione il server dimentica le sottoscrizioni
-  const users = client.subscribe('/push/USERS', frame => {
-    const body = JSON.parse(frame.body);
-    switch (frame.headers['event-type']) {
-      case 'CONNECTED': console.log('Sottoscritto a', body.channel); break;
-      case 'ERROR': console.warn('Rifiutata:', body.message); users.unsubscribe(); break;
-      default: console.log(frame.headers['event-type'], body);
+    @Transactional
+    public UserDto create(UserDto user) {
+        // ... save
+        events.publishEvent(SsePushEvent.of(user, EventType.CREATED, Channels.USERS));
+        return user;
     }
-  }, { filters: JSON.stringify({ requiredEventTypes: ['CREATED'], requiredFieldsPath: ['id', 'name'] }) });
-
-  //Modifica dei filtri con conferma
-  client.watchForReceipt('filters-1', () => console.log('Filtri aggiornati'));
-  client.publish({ destination: `/push/filter/${users.id}`, headers: { receipt: 'filters-1' },
-                   body: JSON.stringify({ contentFilters: [{ fieldPath: 'address.city', check: 'SAME_VALUE', value: 'CITY-1' }] }) });
-};
-client.activate();
+}
 ```
 
-### Broker e heart-beat
-La libreria non configura il broker: prefissi, broker semplice o relay, convertitori e trasporto restano
-dell'applicazione. Push funziona anche sugli endpoint STOMP dell'applicazione.
+**Subscribe and stream** from a client:
 
-- **Senza configurazione del broker** vale quello di default di Spring, che senza prefissi accetterebbe ogni destinazione
-  e farebbe da relay anonimo tra i client. La libreria scarta allora ogni `SUBSCRIBE` e `SEND` fuori da `/push`
-  (lo segnala un log all'avvio): per usare STOMP anche per le proprie destinazioni si configura il broker.
-- **L'heart-beat** dipende dal broker e senza configurazione è spento: dietro proxy e load balancer le connessioni
-  inattive possono essere chiuse (stomp.js si riconnette e ripete le sottoscrizioni). Per attivarlo:
-  ```java
-  @Configuration
-  public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+```bash
+# 1. Subscribe to the USERS channel: only CREATED events for users in CITY-1, only id and name
+curl -X POST http://localhost:8080/api/sse/subscribe/USERS \
+     -H 'Content-Type: application/json' \
+     -d '{"requiredEventTypes":["CREATED"],
+          "contentFilters":[{"fieldPath":"address.city","check":"SAME_VALUE","value":"CITY-1"}],
+          "requiredFieldsPath":["id","name"]}'
+# -> {"sessionId":"<id>","channel":"USERS","streamedObject":"UserDto"}
 
-      private final TaskScheduler messageBrokerTaskScheduler;
+# 2. Open the stream
+curl -N http://localhost:8080/api/sse/stream/<id>
+# event:CONNECTED
+# data:Connection opened
+# event:CREATED
+# data:{"id":1,"name":"FOO-1"}
 
-      //@Lazy: lo scheduler del broker è creato dalla stessa configurazione; @Qualifier: esiste anche il 'taskScheduler' della libreria
-      public WebSocketConfig(@Lazy @Qualifier("messageBrokerTaskScheduler") TaskScheduler messageBrokerTaskScheduler) {
-          this.messageBrokerTaskScheduler = messageBrokerTaskScheduler;
-      }
-
-      @Override
-      public void configureMessageBroker(MessageBrokerRegistry registry) {
-          registry.enableSimpleBroker("/topic")
-                  .setHeartbeatValue(new long[] {10000, 10000})
-                  .setTaskScheduler(messageBrokerTaskScheduler);
-      }
-  }
-  ```
-
-### Interceptor e sicurezza
-L'interceptor della libreria viene aggiunto al `clientInboundChannel` dopo quelli configurati da Spring Security e
-dall'applicazione, qualunque sia l'ordine dei loro configurer: un interceptor di autorizzazione vede anche i frame push.
-Solo un interceptor aggiunto più tardi, con `addInterceptor` sul canale già creato, viene dopo e non li vede.
-Con Spring Security si proteggono con `simpSubscribeDestMatchers("/push/**")` e `simpDestMatchers("/push/filter/**")`.
-
-Le sottoscrizioni push non generano `SessionSubscribeEvent`/`SessionUnsubscribeEvent` e non compaiono in `SimpUserRegistry`.
-I listener della libreria per `SessionConnectEvent` e `SessionDisconnectEvent` vengono eseguiti per primi.
-
-### Executor
-- La consegna degli eventi (SSE e STOMP) usa sempre `pushExecutor`, anche con STOMP attivo.
-- Con STOMP attivo Spring Boot non crea `applicationTaskExecutor`, perché il broker registra i propri executor: i metodi
-  `@Async` dell'applicazione usano un thread nuovo per chiamata e all'avvio compare un warning.
-  Con `spring.task.execution.mode=force` Spring Boot crea comunque l'executor, ma lo usa anche per i canali dei client
-  WebSocket (`clientInboundChannel`, `clientOutboundChannel`).
-- Se Spring Boot sceglierebbe per i canali dei client lo scheduler `taskScheduler` della libreria (2 thread, heartbeat SSE),
-  la libreria dà ai canali un pool dedicato con i default di Spring (2 thread per core). Un executor scelto dall'applicazione
-  con `registration.executor(...)` in un proprio `WebSocketMessageBrokerConfigurer` resta il suo; come con l'executor
-  scelto da Spring Boot, le impostazioni di `registration.taskExecutor()` non si applicano.
-
-### Bean registrati da STOMP
-| Bean | Tipo | Ruolo |
-|---|---|---|
-| `pushStompRegistry` | `StompRegistry` | Client per canale e per sessione, consegna degli eventi. |
-| `pushStompService` | `StompService` | Sottoscrizione, filtri, disiscrizione e chiusura delle sessioni. |
-| `pushStompEventManager` | `StompEventManager` | Punto d'ingresso per pubblicare eventi STOMP. |
-| `pushStompConfigurer` | configurer WebSocket | Endpoint, interceptor e verifiche all'avvio. |
-
-Più l'infrastruttura di `@EnableWebSocketMessageBroker`, condivisa con l'eventuale configurazione dell'applicazione.
-
-## Architettura
-| Package | Contenuto |
-|---|---|
-| `annotation` | `@EnablePushMessaging` e l'annotation processor che genera l'enum dei canali. |
-| `channel` | `@ChannelDefinition` e l'interfaccia `ChannelEnum`. |
-| `client` | `SseClient`, `StompClient` e il loro stato `ClientStatus`. |
-| `controller` | `PushController`, `SseController` e `StompController`, da estendere. |
-| `event` | `PushEvent`/`SsePushEvent`/`StompPushEvent`, `EventType`, `EventManager`/`SseEventManager`/`StompEventManager`. |
-| `exception` | `InvalidFilterException` (400), `NoSuchClientException` (404) e `SubscriptionInUseException` (STOMP). |
-| `filter` | Richieste di filtraggio, `CheckType`, selezione dei campi (`FieldSelector`), validazione. |
-| `properties` | `PushProperties` e `StompProperties`. |
-| `registry` | `EventRegistry`, `SseRegistry` e `StompRegistry`. |
-| `service` | `PushService`, `SseService` e `StompService`. |
-
-Ogni ruolo ha una base astratta generica (`PushController`, `PushService`, `EventManager`, `EventRegistry`,
-`PushEvent`) e un'implementazione per protocollo. Le classi STOMP sono le uniche che usano spring-messaging e
-spring-websocket.
-
-Il flusso di un evento:
-```text
-servizio @Transactional
-  └─ SseEventManager.publishEvent(event)
-       └─ ApplicationEventPublisher
-            └─ (commit) EventManager.onEvent  @Async("pushExecutor")
-                 └─ SseEventManager.handle
-                      └─ SseRegistry.broadcast ── per ogni client in STREAMING sul canale:
-                                                   filtro tipo evento → filtro contenuto →
-                                                   selezione dei campi → SseEmitter.send
+# 3. Unsubscribe
+curl -X DELETE http://localhost:8080/api/sse/unsubscribe/<id>
 ```
 
-## Limitazioni note
-- **Sottoscrizioni mai aperte**: un client che si sottoscrive ma non chiama mai `GET stream` né `DELETE unsubscribe`
-  resta nel registro.
-- **Proprietà JSON rinominate**: i percorsi si verificano sui nomi dei campi Java, mentre la selezione si applica
-  al JSON del payload. Un campo il cui nome JSON è diverso (`@JsonProperty`, naming strategy) non si può selezionare:
-  arriva sempre come `null`.
-- **Un solo canale per sessione**: per seguire più canali il client apre più sottoscrizioni.
-- **Istanza singola**: il registro dei client è in memoria. Con più istanze dell'applicazione ogni evento arriva
-  solo ai client collegati all'istanza che lo pubblica. Vale anche per STOMP, anche con un broker relay.
-- **STOMP**: niente SockJS sull'endpoint della libreria (funziona su un endpoint SockJS dell'applicazione); solo
-  `ack:auto`; gli eventi non sono ordinati, come per SSE, e in rari casi il primo può precedere il `CONNECTED`.
+With `stomp = true` and an empty `StompController<Channels>` subclass, a STOMP client (e.g. `@stomp/stompjs`) connects to `/push-ws` and subscribes to `/push/USERS`, passing the same filter JSON in a `filters` header.
 
-## Build
+## Testing
+
 ```bash
 ./mvnw clean verify
 ```
-Esegue i test (unitari e i flussi SSE e STOMP completi su server reale) e produce il jar della libreria, i sorgenti e la
-javadoc in `target/`.
+
+Runs 113 JUnit tests and builds the jar, sources jar and Javadoc. Coverage includes:
+
+- **End-to-end flows on a real embedded server**: SSE (subscribe, stream, publish in a transaction, field selection, 400/404 errors) and STOMP over a real WebSocket client (filters, receipts, multiple projections per session, disconnect cleanup, push frames never reaching the broker).
+- **Coexistence and isolation**: STOMP alongside an application's own broker and endpoints, SSE and STOMP events never crossing, STOMP activation/misconfiguration failing fast at startup, and a check that only STOMP classes reference the messaging APIs.
+- **Unit tests**: filter validation and predicates, field selection, STOMP registry/service/controller, destination parsing, mappers, executor and scheduler wiring.
+
+---
+
+Built with AI-assisted development (Claude Code); design, architecture and code review by me.
